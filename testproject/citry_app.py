@@ -99,51 +99,24 @@ class ArticleList(Component):
 app.register(ArticleList, "article-list")
 
 
-class RichBody(Component):
-    """`{% richtext %}` -- a Wagtail filter-style tag over a StreamField value."""
+class Card(Component):
+    """
+    A named slot and a default one.
 
-    citry = app
-    template = """
-    {% load wagtailcore_tags %}
-    <article class="body">{{ body|richtext }}</article>
+    `<c-fill name="header">` fills the first; anything else in the element body
+    fills the second. The fallback shows when nothing is given.
     """
 
-
-app.register(RichBody, "rich-body")
-
-
-class Card(Component):
-    """A component with a slot, filled by the body of `<c-card>...</c-card>`."""
-
     citry = app
     template = """
-    <aside class="card"><c-slot/></aside>
+    <aside class="card">
+      <header class="card-header"><c-slot name="header">Untitled</c-slot></header>
+      <c-slot/>
+    </aside>
     """
 
 
 app.register(Card, "card")
-
-
-class StreamBody(Component):
-    """
-    A StreamField rendered with Wagtail's `{% include_block %}`.
-
-    Each block renders through its own Wagtail template, so this pulls a whole
-    second template-loading pass inside a Citry component.
-    """
-
-    citry = app
-    template = """
-    {% load wagtailcore_tags %}
-    <div class="stream">
-      {% for block in blocks %}
-        <div class="block block-{{ block.block_type }}">{% include_block block %}</div>
-      {% endfor %}
-    </div>
-    """
-
-
-app.register(StreamBody, "stream-body")
 
 
 class Button(Component):

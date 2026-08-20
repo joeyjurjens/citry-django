@@ -187,9 +187,13 @@ class TestRenderedPages:
         assert 'linktype="page"' not in article
         assert '<a href="/">Back home</a>' in article
 
-    def test_the_element_body_filled_the_components_slot(self, article):
+    def test_both_slots_were_filled_from_the_django_template(self, article):
+        """The named fill lands in the header, the default one in the body."""
         assert 'class="card"' in article
-        assert "Filed under <b>Citry + Wagtail</b>" in article
+        header = re.search(r'<header class="card-header"[^>]*>(.*?)</header>', article, re.S)
+        assert header, "the component's named slot did not render"
+        assert "Filed under <b>Citry + Wagtail</b>" in header.group(1)
+        assert "Untitled" not in article, "the fallback showed even though a fill was given"
 
     def test_a_wagtail_tag_inside_a_region_used_the_templates_own_load(self, article):
         assert '<a href="/">Back</a>' in article
