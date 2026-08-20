@@ -106,6 +106,44 @@ def test_awkward_input_is_handled(render, template, context, expected):
     assert expected in render(template, **context)
 
 
+@pytest.mark.parametrize("a", [True, False])
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("{% if a %}<div>{% endif %}</div>", id="opens-inside-closes-outside"),
+        pytest.param("<div>{% if a %}</div>{% endif %}", id="opens-outside-closes-inside"),
+    ],
+)
+def test_a_block_and_an_element_may_interleave(render, render_vanilla, strip_cids, source, a):
+    """
+    A Django block and an HTML element need not nest inside one another.
+
+    Neither engine sees the other's structure: Citry reads `<div>` and `</div>`
+    as a well-formed pair because the claimed ranges between them are just text,
+    and Django owns the `{% if %}`/`{% endif %}` pair separately. The two trees
+    never have to agree, which is what makes an element boundary a non-issue.
+
+    Compared against plain Django rather than an expected string: matching what
+    Django does with degenerate markup is the whole requirement.
+    """
+    assert strip_cids(render(source, a=a)).strip() == render_vanilla(source, a=a).strip()
+
+
+def test_a_block_inside_an_attribute_value(render):
+    """
+    The same freedom applies inside an attribute value, where an element could
+    never have gone.
+
+    Output is not compared against Django here, because the two legitimately
+    differ when the branch is empty: Citry parses the HTML and normalises
+    `class=""` away, where Django, doing plain text substitution, keeps it.
+    That is Citry being Citry, and it is the same with no Django in sight.
+    """
+    source = '<div class="{% if a %}on{% endif %}">x</div>'
+    assert 'class="on"' in render(source, a=True)
+    assert "class" not in render(source, a=False)
+
+
 def test_verbatim_body_is_never_interpreted(render):
     out = render("{% verbatim %}{{ raw }}{% endverbatim %}<p>after</p>")
     assert "{{ raw }}" in out

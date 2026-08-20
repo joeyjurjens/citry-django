@@ -15,7 +15,7 @@ Django's real engine, so anything you can `{% load %}` works.
 
 ## Status
 
-189 tests pass on this machine (Python 3.12, Django 6.1, Wagtail 7.4.2,
+194 tests pass on this machine (Python 3.12, Django 6.1, Wagtail 7.4.2,
 Citry 0.3.2 / citry_core 1.6.0 built from source). They all run against one
 real Wagtail project in `testproject/`, with Wagtail, an asset pipeline and
 six third-party tag libraries switched on at once. No tag library is written for
@@ -314,10 +314,16 @@ blocks, but a literal `<c-something>` you wanted as *text* elsewhere will be
 treated as a region. Wrap it in `{% verbatim %}` to leave it alone. An unclosed
 `<c-x>` is left as text rather than guessed at.
 
-**6. A Django block tag cannot straddle a region boundary.** `{% if x %}` may
-wrap a whole `<c-card>...</c-card>`, and it may sit inside one, but it cannot
-open outside a region and close inside it. Django and Citry each need a
-well-formed tree.
+**6. A Django block tag cannot straddle a `<c-*>` region boundary in a Django
+template.** `{% if x %}` may wrap a whole `<c-card>...</c-card>`, and it may sit
+inside one, but it cannot open outside a region and close inside it. Django
+rejects that with its own `TemplateSyntaxError`, loudly.
+
+This is *not* a rule about HTML nesting. A Django block and an element may
+interleave however they like — `{% if a %}<div>{% endif %}</div>` renders exactly
+as plain Django renders it, and a block works inside an attribute value where an
+element could never go. Neither engine sees the other's structure, so the two
+trees never have to agree.
 
 ### Injection safety
 
