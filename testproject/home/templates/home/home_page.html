@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags %}
+
+{% block body_class %}template-homepage{% endblock %}
+
+{% comment %}
+An ordinary Django template. It still extends base.html, still uses Wagtail
+tags, still fills Django blocks, and its own {{ page.title }} still means what
+it always meant. Citry regions are written in Citry's own syntax and compiled
+by Citry, so everything Citry allows works inside them.
+{% endcomment %}
+
+{% block content %}
+  <c-hero c-title="page.title"
+          c-intro="page.intro"
+          c-image="page.hero_image"
+          c-articles="articles"/>
+
+  {# Citry's own control flow, in a Django template. `c-*` values are Python. #}
+  <c-if cond="len(articles) > 0">
+    <c-article-list heading="Articles" c-articles="articles"/>
+  </c-if>
+  <c-else>
+    <p class="empty">Nothing published yet.</p>
+  </c-else>
+
+  <footer class="page-footer">
+    {# Plain Django, untouched, alongside the Citry regions. #}
+    <p>Rendered by Django. Home: <a href="{% pageurl page %}">{{ page.title }}</a></p>
+  </footer>
+{% endblock %}

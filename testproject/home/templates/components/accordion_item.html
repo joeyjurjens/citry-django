@@ -1,0 +1,9 @@
+{% load wagtailcore_tags %}
+<div class="accordion-item" data-parent="{{ accordion_id|default:"not-rendered-inside-accordion" }}">
+    <h3 class="accordion-title">{{ value.title }}</h3>
+    <div class="accordion-content">
+        {% for block in value.content %}
+            {% include_block block %}
+        {% endfor %}
+    </div>
+</div>

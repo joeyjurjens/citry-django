@@ -1,0 +1,18 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "citry-django"
+version = "0.1.0"
+description = "Citry and Django's template engines, composed: real Django tags and filters inside Citry components, and Citry components inside Django templates."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["citry>=0.3.2", "django>=4.2"]
+
+[project.optional-dependencies]
+sekizai = ["citry-django-sekizai"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/citry_django"]

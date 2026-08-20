@@ -1,0 +1,11 @@
+.venv/
+venv/
+citry-src/
+__pycache__/
+*.pyc
+*.egg-info/
+db.sqlite3
+.static/
+.media/
+.pytest_cache/
+.ruff_cache/

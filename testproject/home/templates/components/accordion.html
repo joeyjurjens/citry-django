@@ -1,0 +1,6 @@
+{% load wagtailcore_tags %}
+<div class="accordion" id="{{ accordion_id }}">
+    {% for item in value.items %}
+        {% include_block item %}
+    {% endfor %}
+</div>

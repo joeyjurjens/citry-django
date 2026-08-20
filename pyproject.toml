@@ -1,0 +1,41 @@
+[tool.uv.workspace]
+members = ["packages/*"]
+
+[tool.uv.sources]
+citry = { path = "citry-src/packages/py/citry", editable = true }
+citry_core = { path = "citry-src/packages/py/citry_core", editable = true }
+citry-django = { workspace = true }
+citry-django-sekizai = { workspace = true }
+
+[dependency-groups]
+dev = [
+    "citry-django[sekizai]",
+    "pytest>=8.0",
+    "pytest-django>=4.8",
+    "wagtail>=6.0",
+    "django-compressor>=4.4",
+    "django-crispy-forms>=2.0",
+    "crispy-bootstrap4",
+    "django-widget-tweaks",
+    "django-bootstrap5",
+    "sorl-thumbnail",
+    "pillow",
+]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "testproject.settings"
+pythonpath = ["."]
+testpaths = ["tests"]
+addopts = "--strict-markers --strict-config -q"
+
+[tool.ruff]
+line-length = 100
+src = ["packages/citry-django/src", "packages/citry-django-sekizai/src", "tests", "testproject"]
+extend-exclude = ["citry-src", "venv", "**/migrations"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.ruff.lint.per-file-ignores]
+# `content_panels = [...]` is how Wagtail models are written.
+"testproject/**" = ["RUF012"]

@@ -1,0 +1,15 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "citry-django-sekizai"
+version = "0.1.0"
+description = "Route a Citry component's own CSS and JS through django-sekizai, so an existing asset pipeline handles them."
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+dependencies = ["citry-django", "django-sekizai>=4.0"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/citry_django_sekizai"]

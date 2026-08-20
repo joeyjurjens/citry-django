@@ -1,0 +1,25 @@
+{% extends "base.html" %}
+{% load wagtailcore_tags %}
+
+{% block body_class %}template-articlepage{% endblock %}
+
+{% block content %}
+  <h1>{{ page.title }}</h1>
+
+  {# A component receiving a Wagtail rich-text value, which it renders with
+     Wagtail's own richtext filter. #}
+  <c-rich-body c-body="page.body"/>
+
+  <c-stream-body c-blocks="page.body_stream"/>
+
+  {% comment %}
+  A component body becomes the default slot. Inside a region, interpolation is
+  Citry's, so it takes a Python expression. A Wagtail tag written normally
+  still works there: the load line at the top of this file travels into the
+  region with it.
+  {% endcomment %}
+  <c-card>
+    <p>Filed under <b>{{ page.get_parent().title }}</b>.</p>
+    <p><a href="{% pageurl page.get_parent %}">Back</a></p>
+  </c-card>
+{% endblock %}
