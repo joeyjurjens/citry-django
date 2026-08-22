@@ -60,4 +60,4 @@ class CitryTemplates(DjangoTemplates):
         # `from_string` never goes through a loader, so the rewrite has to
         # happen here too -- otherwise Citry syntax would work in a file and
         # silently not in a string.
-        return super().from_string(rewrite_source(template_code))
+        return super().from_string(rewrite_source(template_code, origin="<string template>"))

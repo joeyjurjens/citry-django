@@ -9,7 +9,7 @@ description = "Citry and Django's template engines, composed: real Django tags a
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["citry>=0.3.2", "django>=4.2"]
+dependencies = ["citry>=0.4.3", "django>=4.2"]
 
 [project.optional-dependencies]
 sekizai = ["citry-django-sekizai"]

@@ -10,36 +10,42 @@ and at render time Django drives, asking back only for the branches it takes.
 That ordering is what makes a guarded component cost nothing when the guard is
 false, and what lets `{% with %}` bind names Citry can see.
 
-Segments hand Django finished HTML, because that is what Django's node contract
-promises: a tag may rewrite, inspect or cache the text its body produced.
+Segments hand Django inert markers while retaining their structured
+``CitryRender`` values. Once Django has selected, ordered, and repeated the
+markers, the adapter rebuilds one structured Citry render for the enclosing
+serializer. A tag that alters or discards a reached marker fails loudly.
 """
 
 from __future__ import annotations
 
-from typing import Any
+import re
+from secrets import token_hex
+from threading import RLock
+from typing import Any, cast
 
-from citry.citry_context import CitryContext
-from citry.citry_render import CitryRender
-from citry.component_render import _render_body
-from citry.extension import Extension
+from citry import (
+    CitryRender,
+    CompiledBody,
+    collect_compiled_body_fills,
+    render_compiled_body,
+)
+from citry.extension import Extension, ForeignSpan, ForeignSpanSet
+from citry.nodes import ForeignHtmlAttr as CitryForeignHtmlAttr
 from citry.nodes import ForeignNode as CitryForeignNode
-from citry.nodes import Node
+from citry.nodes import HtmlAttr, Node
 from django.core.exceptions import ImproperlyConfigured
 from django.template import engines
 from django.template.backends.django import DjangoTemplates
 from django.template.base import DebugLexer, Origin, Template, TokenType
 from django.template.context import make_context
 from django.template.utils import InvalidTemplateEngineError
+from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
 from .expressions import is_django_expression
 from .nodes import CitryParser, CitrySegment
 
-#: A sentinel standing in for one Citry segment while Django renders a block.
-#: Deliberately mixed-case: a tag that rewrites its body text alters it, which
-#: is how `_check_sentinels` notices.
-#: Where a template's `{% load %}` tags are kept for its nested compiles.
-_LOADS_ATTR = "_citry_django_loads"
+_SEGMENT_MARKER_LABEL = "CiTrY-SeGmEnT"
 
 
 class _BlockState:
@@ -51,12 +57,71 @@ class _BlockState:
     builds its own, and template code cannot reach it.
     """
 
-    __slots__ = ("citry_context", "node", "segments")
+    __slots__ = ("citry_context", "mode", "node", "nonce", "renders", "sink")
 
-    def __init__(self, node, citry_context):
+    def __init__(
+        self,
+        node: ForeignNode,
+        citry_context: Any,
+        *,
+        mode: str = "render",
+        sink: Any = None,
+    ) -> None:
         self.node = node
         self.citry_context = citry_context
-        self.segments = []
+        self.nonce = token_hex(16)
+        self.renders: list[CitryRender] = []
+        self.mode = mode
+        self.sink = sink
+
+    def retain(self, rendered: CitryRender) -> str:
+        """Retain one live render and return its exact marker for Django."""
+        index = len(self.renders)
+        self.renders.append(rendered)
+        return self._marker(index)
+
+    def _marker(self, index: int) -> str:
+        return f"<!--{_SEGMENT_MARKER_LABEL}:{self.nonce}:{index}-->"
+
+    def restore(self, html: str) -> CitryRender:
+        """Replace Django's intact markers with their structured renders."""
+        raw_prefix = f"<!--{_SEGMENT_MARKER_LABEL}:{self.nonce}:"
+        raw_suffix = "-->"
+        escaped_prefix = str(escape(raw_prefix))
+        escaped_suffix = str(escape(raw_suffix))
+        pattern = re.compile(
+            rf"(?P<raw>{re.escape(raw_prefix)}(?P<raw_index>\d+){re.escape(raw_suffix)})"
+            rf"|(?P<escaped>{re.escape(escaped_prefix)}(?P<escaped_index>\d+)"
+            rf"{re.escape(escaped_suffix)})"
+        )
+        occurrences: list[tuple[int, int, int, bool]] = []
+        seen: list[int] = []
+        for match in pattern.finditer(html):
+            raw_index = match.group("raw_index")
+            index = int(raw_index if raw_index is not None else match.group("escaped_index"))
+            seen.append(index)
+            occurrences.append((match.start(), match.end(), index, raw_index is None))
+        if sorted(seen) != list(range(len(self.renders))):
+            msg = (
+                "Django transformed, duplicated, or discarded a reached Citry segment marker. "
+                "Tags around Citry components must preserve their rendered body positions."
+            )
+            raise RuntimeError(msg)
+
+        parts: list[Any] = []
+        cursor = 0
+        for start, end, index, was_escaped in sorted(occurrences):
+            if start > cursor:
+                parts.append(html[cursor:start])
+            rendered = self.renders[index]
+            if was_escaped:
+                parts.append(str(escape(rendered.serialize(deps_strategy="ignore"))))
+            else:
+                parts.append(rendered)
+            cursor = end
+        if cursor < len(html):
+            parts.append(html[cursor:])
+        return CitryRender(parts=parts, context=self.citry_context)
 
 
 def get_django_engine() -> Any:
@@ -92,41 +157,45 @@ class ForeignNode(Node):
     def __init__(
         self,
         source: str,
-        segments: list[list[Any]],
+        segments: list[CompiledBody],
         loads: str = "",
+        origin: str = "<citry-django>",
     ) -> None:
         self.source = source
         self.segments = segments
         self.loads = loads
+        self.origin = origin
         self._template: Any = None
+        self._template_lock = RLock()
 
     def _django_template(self) -> Any:
         """Compile the block once, with a marker where each segment belongs."""
         if self._template is not None:
             return self._template
+        with self._template_lock:
+            if self._template is None:
+                pieces = [self.loads, self.source]
 
-        pieces = [self.loads, self.source]
+                engine = get_django_engine().engine
+                source = "".join(pieces)
+                origin = Origin(self.origin, template_name=self.origin)
+                nodelist = CitryParser(DebugLexer(source).tokenize(), engine, origin).parse()
+                for node in nodelist.get_nodes_by_type(CitrySegment):
+                    node.owner = self
 
-        engine = get_django_engine().engine
-        source = "".join(pieces)
-        nodelist = CitryParser(
-            DebugLexer(source).tokenize(), engine, Origin("<citry-django>")
-        ).parse()
-        for node in nodelist.get_nodes_by_type(CitrySegment):
-            node.owner = self
-
-        # Tags reach for `context.template`, so the nodelist needs a carrier.
-        carrier = Template("", engine=engine)
-        carrier.nodelist = nodelist
-        self._template = carrier
-        return carrier
+                # Tags reach for `context.template`, so the nodelist needs a carrier.
+                carrier = Template("", origin=origin, engine=engine)
+                carrier.nodelist = nodelist
+                self._template = carrier
+        return self._template
 
     def render(self, context: Any) -> Any:
         """
         Let Django drive the block and return what it produced.
 
-        Each segment hands Django finished HTML, so Django's own output is the
-        final text and there is nothing to stitch back together afterwards.
+        Each reached segment gives Django an inert marker. Django still owns
+        branch selection and repetition; afterward the markers are restored as
+        nested ``CitryRender`` parts so outer serialization sees the full tree.
         """
         engine = get_django_engine()
         django_context = make_context(
@@ -134,52 +203,98 @@ class ForeignNode(Node):
             context.variables.get("request"),
             autoescape=engine.engine.autoescape,
         )
-        django_context.citry_state = _BlockState(self, context)
+        state = _BlockState(self, context)
+        django_context.citry_state = state
         carrier = self._django_template()
         with django_context.bind_template(carrier):
-            return mark_safe(carrier.nodelist.render(django_context))
+            html = carrier.nodelist.render(django_context)
+        return state.restore(html)
 
     def collect_fills(self, context: Any, sink: Any) -> None:
-        return None
+        engine = get_django_engine()
+        django_context = make_context(
+            dict(context.variables),
+            context.variables.get("request"),
+            autoescape=engine.engine.autoescape,
+        )
+        django_context.citry_state = _BlockState(self, context, mode="fills", sink=sink)
+        carrier = self._django_template()
+        with django_context.bind_template(carrier):
+            carrier.nodelist.render(django_context)
 
     def __repr__(self) -> str:
         return f"ForeignNode({self.source[:40]!r}, {len(self.segments)} segments)"
 
 
+class DjangoHtmlAttr(HtmlAttr):
+    """A component input whose ordered source is rendered by Django."""
+
+    def __init__(
+        self,
+        source: str,
+        position: tuple[int, int],
+        key: str,
+        loads: str,
+        origin: str,
+    ) -> None:
+        self.source = source
+        self.position = position
+        self.key = key
+        self.loads = loads
+        self.origin = origin
+        self.used_vars = ()
+        self._template = None
+        self._template_lock = RLock()
+
+    def resolve(self, context: Any) -> Any:
+        if self._template is None:
+            with self._template_lock:
+                if self._template is None:
+                    engine = get_django_engine().engine
+                    self._template = Template(
+                        self.loads + self.source,
+                        origin=Origin(self.origin, template_name=self.origin),
+                        engine=engine,
+                    )
+        template = self._template
+        if template is None:  # pragma: no cover - guarded by the lock above
+            raise RuntimeError("Django foreign template compilation did not publish a template.")
+        engine = get_django_engine()
+        request = context.variables.get("request")
+        django_context = make_context(
+            dict(context.variables),
+            request,
+            autoescape=engine.engine.autoescape,
+        )
+        return mark_safe(template.render(django_context))
+
+
 def render_segment(foreign: ForeignNode, index: int, django_context: Any) -> str:
     """
-    Render one Citry segment to finished HTML.
+    Render one Citry segment and give Django an inert positional marker.
 
-    Serializing with ``deps_strategy="ignore"`` applies the subtree's identity
-    markers while leaving its JS/CSS records unemitted, so they still reach the
-    page as a whole. Called once per time Django reaches this point, so a
-    Django-side ``{% for %}`` gets one render per iteration.
+    The live render stays in the block state until Django has selected and
+    ordered all occurrences. Called once per time Django reaches this point, so
+    a Django-side ``{% for %}`` gets one distinct render per iteration.
     """
-    from citry.component_render import _settle_render
-    from citry.serialize import serialize_render
-
     state = getattr(django_context, "citry_state", None)
     if state is None:  # pragma: no cover - a marker outside its own block
         return ""
-    citry_context = state.citry_context
-
-    # The Django context is the live one, so anything a `{% with %}` or a
-    # Django-side `{% for %}` pushed is visible to Citry here.
-    variables = dict(citry_context.variables)
-    variables.update(django_context.flatten())
-
-    segment_context = CitryContext(
-        variables=variables,
-        extra=citry_context.extra,
-        component=citry_context.component,
-        provides=citry_context.provides,
-        sandboxed=citry_context.sandboxed,
-        ownership=citry_context.ownership,
+    variables = django_context.flatten()
+    if state.mode == "fills":
+        collect_compiled_body_fills(
+            foreign.segments[index],
+            state.citry_context,
+            state.sink,
+            variables_overlay=variables,
+        )
+        return ""
+    rendered = render_compiled_body(
+        foreign.segments[index],
+        state.citry_context,
+        variables_overlay=variables,
     )
-
-    parts = _render_body(foreign.segments[index], segment_context)
-    settled = _settle_render(CitryRender(parts=parts, context=segment_context), finalize_root=False)
-    return serialize_render(settled, deps_strategy="ignore")
+    return mark_safe(state.retain(rendered))
 
 
 class CitryDjangoExtension(Extension):
@@ -193,7 +308,7 @@ class CitryDjangoExtension(Extension):
 
     name = "citry_django"
 
-    def on_template_opaque_spans(self, ctx: Any) -> list[tuple[int, int]] | None:
+    def on_template_foreign_spans(self, ctx: Any) -> ForeignSpanSet | None:
         """
         Claim every span Django owns, using Django's own lexer.
 
@@ -213,10 +328,8 @@ class CitryDjangoExtension(Extension):
             for t in tokens
             if t.token_type is TokenType.BLOCK and t.contents.split()[:1] == ["load"]
         )
-        if loads:
-            setattr(ctx.component_class, _LOADS_ATTR, loads)
-
-        spans: list[tuple[int, int]] = []
+        byte_offsets = _utf8_byte_offsets(ctx.content)
+        spans: list[ForeignSpan] = []
         verbatim_from: int | None = None
         for token in tokens:
             command = token.contents.split()[:1] if token.token_type is TokenType.BLOCK else []
@@ -227,7 +340,13 @@ class CitryDjangoExtension(Extension):
                 verbatim_from = token.position[0]
                 continue
             if command == ["endverbatim"] and verbatim_from is not None:
-                spans.append((verbatim_from, token.position[1]))
+                spans.append(
+                    ForeignSpan(
+                        byte_offsets[verbatim_from],
+                        byte_offsets[token.position[1]],
+                        may_control_body=True,
+                    )
+                )
                 verbatim_from = None
                 continue
             if verbatim_from is not None:
@@ -239,16 +358,41 @@ class CitryDjangoExtension(Extension):
                 token.contents, engine, libraries
             ):
                 continue  # a Citry Python expression
-            spans.append(token.position)
-        return spans
+            start, end = token.position
+            spans.append(
+                ForeignSpan(
+                    byte_offsets[start],
+                    byte_offsets[end],
+                    may_control_body=token.token_type is TokenType.BLOCK,
+                )
+            )
+        if not spans:
+            return None
+        return ForeignSpanSet(tuple(spans), provider_metadata={"loads": loads})
 
-    def on_template_compiled(self, ctx: Any) -> list[Any] | None:
+    def on_template_foreign_compiled(self, ctx: Any) -> list[Any] | None:
+        metadata = ctx.provider_metadata if isinstance(ctx.provider_metadata, dict) else {}
         loads = "".join(
             node.text
-            for node in _walk_foreign(ctx.nodes)
+            for node in ctx.nodes
+            if isinstance(node, CitryForeignNode)
+            if node.provider == self.name
             if node.text.lstrip("{% ").startswith("load")
-        ) or getattr(ctx.component_class, _LOADS_ATTR, "")
-        return _splice_body(ctx.nodes, loads)
+        ) or metadata.get("loads", "")
+        _resolve_foreign_attrs(ctx.nodes, loads, ctx.origin)
+        result = _splice_body(ctx.nodes, loads, ctx.origin, ctx.compiled_body)
+        ctx.mark_resolved(*ctx.claims)
+        return result
+
+
+def _utf8_byte_offsets(source: str) -> list[int]:
+    """Map every Python character boundary to its UTF-8 byte offset."""
+    offsets = [0]
+    total = 0
+    for character in source:
+        total += len(character.encode("utf-8"))
+        offsets.append(total)
+    return offsets
 
 
 def _loaded_libraries(tokens) -> tuple[str, ...]:
@@ -263,25 +407,29 @@ def _loaded_libraries(tokens) -> tuple[str, ...]:
     return tuple(dict.fromkeys(label for label in labels if label != "from"))
 
 
-def _walk_foreign(body: list[Any]):
-    """Every Citry ForeignNode in a body, at any depth."""
+def _resolve_foreign_attrs(body: list[Any], loads: str, origin: str) -> None:
+    """Replace direct foreign component inputs with Django-rendered attrs."""
     for item in body:
-        if isinstance(item, CitryForeignNode):
-            yield item
-        for nested in _nested_bodies(item):
-            yield from _walk_foreign(nested)
-
-
-def _nested_bodies(item: Any):
-    """The body lists hanging off a node (component/slot bodies, branches)."""
-    body = getattr(item, "body", None)
-    if isinstance(body, list):
-        yield body
-    branches = getattr(item, "branches", None)
-    if isinstance(branches, tuple):
-        for branch in branches:
-            if isinstance(branch, tuple) and len(branch) > 2 and isinstance(branch[2], list):
-                yield branch[2]
+        attrs = getattr(item, "attrs", None)
+        if not isinstance(attrs, tuple):
+            continue
+        replaced = []
+        changed = False
+        for attr in attrs:
+            if not isinstance(attr, CitryForeignHtmlAttr):
+                replaced.append(attr)
+                continue
+            foreign_nodes = attr.foreign_nodes()
+            if any(node.provider != CitryDjangoExtension.name for node in foreign_nodes):
+                replaced.append(attr)
+                continue
+            source = "".join(
+                part.text if isinstance(part, CitryForeignNode) else part for part in attr.parts
+            )
+            replaced.append(DjangoHtmlAttr(source, attr.position, attr.key, loads, origin))
+            changed = True
+        if changed:
+            item.attrs = tuple(replaced)
 
 
 #: A `{{ ... }}` that is just a name, e.g. `{{ user }}`.
@@ -304,17 +452,22 @@ def _as_django_source(item: Any) -> str | None:
     return None
 
 
-def _emit_run(pieces: list[str], segments: list[list[Any]], run: list[Any]) -> None:
+def _emit_run(
+    pieces: list[str],
+    segments: list[CompiledBody],
+    run: list[Any],
+    compiled_body: Any,
+) -> None:
     """Add one run of Citry content to the Django source being built."""
     equivalents = [_as_django_source(item) for item in run]
     if all(source is not None for source in equivalents):
-        pieces.append("".join(equivalents))
+        pieces.append("".join(cast("list[str]", equivalents)))
         return
     pieces.append(f"{{% citryseg {len(segments)} %}}")
-    segments.append(run)
+    segments.append(compiled_body(run))
 
 
-def _splice_body(body: list[Any], loads: str) -> list[Any]:
+def _splice_body(body: list[Any], loads: str, origin: str, compiled_body: Any) -> list[Any]:
     """
     Replace a body containing Django tags with a single Django-driven node.
 
@@ -323,28 +476,26 @@ def _splice_body(body: list[Any], loads: str) -> list[Any]:
     parser a template made of those tags plus one marker per run of Citry
     content. Django decides what pairs with what; nothing here matches tags.
     """
-    for item in body:
-        for nested in _nested_bodies(item):
-            spliced = _splice_body(nested, loads)
-            if spliced is not nested:
-                nested[:] = spliced
 
-    if not any(isinstance(item, CitryForeignNode) for item in body):
+    def is_owned(item: Any) -> bool:
+        return isinstance(item, CitryForeignNode) and item.provider == CitryDjangoExtension.name
+
+    if not any(is_owned(item) for item in body):
         return body
 
     # Alternating: Django source from the foreign tags, Citry runs in between.
     pieces: list[str] = []
-    segments: list[list[Any]] = []
+    segments: list[CompiledBody] = []
     run: list[Any] = []
     for item in body:
-        if isinstance(item, CitryForeignNode):
+        if is_owned(item):
             if run:
-                _emit_run(pieces, segments, run)
+                _emit_run(pieces, segments, run, compiled_body)
                 run = []
             pieces.append(item.text)
         else:
             run.append(item)
     if run:
-        _emit_run(pieces, segments, run)
+        _emit_run(pieces, segments, run, compiled_body)
 
-    return [ForeignNode("".join(pieces), segments, loads)]
+    return [ForeignNode("".join(pieces), segments, loads, origin)]

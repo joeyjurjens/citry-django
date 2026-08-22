@@ -1,78 +1,100 @@
-# What Citry needs to add
+# Citry host-template APIs used by this adapter
 
-What Citry has to ship for `citry-django` to work. All of it is generic: no
-Django delimiter appears anywhere in Citry.
+This adapter contains no Django syntax in Citry itself. It uses generic APIs in
+Citry 0.4.3 and Citry Core 1.6.0. The workspace resolves those released
+packages from PyPI, and the adapter declares `citry>=0.4.3`.
 
-The working tree is in `citry-src/`, built with maturin and installed editable.
+## Foreign spans
 
-## The capability
+An extension declares UTF-8 byte spans owned by another template engine:
 
-An extension declares byte ranges another engine owns. Citry keeps them out of
-its grammar and returns them as nodes, in tree order, holding the source
-verbatim. Citry knows no other engine's delimiters.
+```python
+from citry import ForeignSpan, ForeignSpanSet
 
-    # in an extension
-    def on_template_opaque_spans(self, ctx):
-        return [t.position for t in DebugLexer(ctx.content).tokenize()
-                if t.token_type is TokenType.BLOCK]
+def on_template_foreign_spans(self, ctx):
+    return ForeignSpanSet((ForeignSpan(start_byte, end_byte),))
+```
 
-    # arrives in on_template_compiled as:
-    #   ForeignNode(position=(8, 18), text='{% if x %}')
+Citry validates that spans are sorted, non-empty, non-overlapping UTF-8
+boundaries within the immutable root source. The Rust parser masks them without
+shifting byte offsets, then emits provider and ordinal-bearing foreign source
+parts in body, quoted attribute-value, and start-tag order.
 
-Proven with two unrelated hosts: Django (spans from `DebugLexer`) and ERB
-(spans from a different lexer). Neither delimiter appears in Citry.
+The matching `on_template_foreign_compiled(ctx)` hook runs for each independently
+compiled body before `on_template_compiled`. It receives only its provider's
+claims and must call `ctx.mark_resolved(...)` for all of them. Unclaimed or
+unresolved source fails closed. The hook may convert a list of Citry nodes into
+an opaque `CompiledBody` handle with `ctx.compiled_body(nodes)` for later host
+callbacks.
 
-## Rust
+This adapter obtains character offsets from Django's `DebugLexer` and converts
+them to UTF-8 byte offsets before returning the span set. Django decides its own
+block structure later; Citry never matches an opening host tag to a closing one.
 
-| file | change |
-|---|---|
-| `grammar.pest` | one `foreign_region` rule matching Citry's own marker bytes |
-| `ast.rs` | `TemplateElement::Foreign(Text)` |
-| `parser.rs` | `parse_template_with_opaque_spans()`, byte-length-preserving masking, dispatch |
-| `parser_context.rs` | `source_slice()` to recover the verbatim text |
-| `compiler.rs` | emits `ForeignNode(...)`; passes regions through control-flow preprocessing |
-| `constants.rs` | `FOREIGN_NODE` |
-| `citry_template_formatter` (3 files) | leaves foreign regions exactly as written |
-| `citry_core_py/template_parser.rs` | the `opaque_spans` argument |
+## Standalone rendering
 
-Masking substitutes each range with marker bytes of the same byte length, so
-every offset still indexes the original source: diagnostics stay accurate and
-the host's text is sliced back out. The first byte opens a region and the rest
-fill it, so two adjacent regions stay two regions.
+The other direction uses:
 
-`parse_template()` keeps its old signature and delegates, so no existing caller
-changes.
+```python
+Citry.render_template(
+    source,
+    variables,
+    slots=None,
+    template_globals=None,
+    provides=None,
+    foreign_compile_contexts=None,
+    origin="<render_template>",
+)
+```
 
-## Python
+It returns a normal `CitryRender`. The implementation has a bounded per-engine
+compiled-template cache and one private transparent root, so it does not create
+or register a public component class for every source. Actual components inside
+the source keep normal ownership, dependencies, and extension behavior.
 
-| file | change |
-|---|---|
-| `citry/extension.py` | `on_template_opaque_spans` hook, its context, and the manager that combines and orders every extension's ranges |
-| `citry/nodes/__init__.py` | `ForeignNode`, rendering its text verbatim by default |
-| `citry/component_render.py` | calls the hook, passes ranges to the parser, registers the node |
-| `citry_core/template_parser/parse.py` | the `opaque_spans` argument |
+When Django renders a loop or block around Citry nodes that were already
+compiled, the adapter calls `render_compiled_body`. Fill discovery uses the
+matching `collect_compiled_body_fills` API. The adapter therefore imports no
+private Citry render functions.
 
-The default rendering matters: a claimed range that no extension replaces
-renders as the text it always was, so installing this changes no output.
+## Bindings and parser surface
 
-## `render_fragment`
+The lower-level `citry_core.template_parser.parse_template` accepts a keyword
+`ParseOptions` containing `ForeignSpan` values, the projected source offset,
+and the immutable root source. The five language emitters, PyO3 registrations,
+Python wrapper, and `_rust.pyi` expose the same AST variants and fields.
 
-The other direction needs a way to render Citry source without declaring a
-component for it, which is what a `<c-*>` region found in a Django template is::
+The low-level formatter accepts the same options through
+`citry_core.template_formatter.format_template(source, options=options)`. It
+treats claimed ranges as unknown syntax, preserves their bytes exactly, and
+rebases the claims internally while Citry-owned edits shift later source. The
+app-independent `citry format` command does not discover host extensions; an
+adapter or editor integration must supply the claims.
 
-    Citry.render_fragment(source, variables, *, template_globals, provides)
-      -> CitryRender
+In app-aware mode, `citry --app module:engine check` asks installed extensions
+for foreign spans and skips host syntax. If a claim may control a body, the
+checker also suppresses the unknown-template-variable lint for that template,
+because a host loop or assignment may introduce the name. Static checking does
+not import extensions and therefore remains Citry-only.
 
-`citry.py` implements it over an LRU cache of generated component classes, so
-a given source is compiled once.
+## Qualified behavior
 
-## Verified
-
-- Citry's own Rust parser suite: unchanged and passing.
-- The Django adapter: 186 tests, against a real Wagtail project.
-
-## Still to do before landing upstream
-
-- `_rust.pyi` stub, the four non-Python `lang/*.rs` impls, and Python-side
-  tests for the hook (Citry's `CLAUDE.md` Mechanism 4).
-- A written plan before the grammar change (their Mechanism 2). I edited first.
+- Citry's parser and Python runtime suites exercise validation, Unicode byte
+  offsets, attributes, nested template projections, fail-closed ownership,
+  hook order, cache reuse, and concurrent cold compilation.
+- This adapter has 208 passing tests against Django, Wagtail, third-party tag
+  libraries, slot/fill combinations, non-ASCII source, and both integration
+  directions.
+- Django-to-Citry region discovery tolerates host-controlled partial HTML,
+  preserves dependent Citry control-flow sibling chains, and ignores
+  Citry-looking text in raw-text and attribute positions.
+- Host-selected Citry segments remain structured until the enclosing Citry
+  render is serialized. This preserves ownership/event graphs, dependency
+  placeholder positions, CSP state, and one outer serialization pass. Standard
+  Django HTML escaping remains an explicit inert-text boundary.
+- A standalone Citry region reads its CSP nonce from the Django context keys
+  `csp_nonce` or `CSP_NONCE`, then from `request.csp_nonce`.
+- The known fail-loud incompatibility is a Django tag that transforms,
+  duplicates, or discards a reached Citry segment marker. For example,
+  `{% filter upper %}<c-widget/>{% endfilter %}` raises instead of flattening
+  or corrupting Citry's render graph.

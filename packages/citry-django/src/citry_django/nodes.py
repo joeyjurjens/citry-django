@@ -11,10 +11,6 @@ from django.utils.safestring import mark_safe
 
 from .registry import get_citry_app
 
-#: Names that cannot be passed to a component: ``self`` is bound by
-#: ``Component.__init__`` and ``slots`` is Citry's own keyword for fills.
-RESERVED_INPUT_NAMES = frozenset({"self", "slots"})
-
 
 class CitryName:
     """
@@ -83,8 +79,11 @@ def _parse_segment(parser: Parser, token: template.base.Token) -> CitrySegment:
 class CitryFragment(template.Node):
     """A ``<c-*>`` region found in a Django template, rendered by Citry."""
 
-    def __init__(self, source: str) -> None:
+    def __init__(self, source: str, origin: str = "<django template>") -> None:
         self.source = source
+        # Django's Parser overwrites `Node.origin` while attaching source
+        # metadata, so keep Citry's string origin under a distinct name.
+        self.citry_origin = origin
 
     def render(self, context: Any) -> str:
         # `flatten` collapses Django's context stack, so a region inside
@@ -92,26 +91,38 @@ class CitryFragment(template.Node):
         # component inputs so they scope to this region; `request` travels as a
         # render global because nested components need it for Django's
         # `takes_context` tags.
-        variables = {
-            key: value
-            for key, value in context.flatten().items()
-            if isinstance(key, str) and key not in RESERVED_INPUT_NAMES
-        }
+        variables = {key: value for key, value in context.flatten().items() if isinstance(key, str)}
         request = context.get("request")
         # The host's own context, reachable from any component through
         # `inject("django")`. An extension that has to reach host state (a
         # Sekizai holder, say) needs it in nested components too, where the
         # inputs above no longer reach.
-        rendered = get_citry_app().render_fragment(
+        rendered = get_citry_app().render_template(
             self.source,
             variables,
             template_globals={"request": request} if request is not None else None,
             provides={"django": variables},
+            origin=self.citry_origin,
         )
         # Set `CITRY_DEPS_STRATEGY = "ignore"` when the page collects assets
         # itself, through Sekizai or otherwise, so they are not emitted twice.
         strategy = getattr(settings, "CITRY_DEPS_STRATEGY", "document")
-        return mark_safe(rendered.serialize(deps_strategy=strategy))
+        return mark_safe(
+            rendered.serialize(
+                deps_strategy=strategy,
+                csp_nonce=_csp_nonce(context, request),
+            )
+        )
 
     def __repr__(self) -> str:
         return f"<CitryFragment {self.source[:40]!r}>"
+
+
+def _csp_nonce(context: Any, request: Any) -> str | None:
+    """Read the host response nonce without depending on a CSP package."""
+    nonce = context.get("csp_nonce")
+    if nonce is None:
+        nonce = context.get("CSP_NONCE")
+    if nonce is None and request is not None:
+        nonce = getattr(request, "csp_nonce", None)
+    return None if nonce is None else str(nonce)

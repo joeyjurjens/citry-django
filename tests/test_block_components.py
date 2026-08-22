@@ -78,8 +78,9 @@ def test_a_citry_component_inside_a_block_field_body(block, component, db):
     """
     The body is part Citry, and the tag still finds its own nodes.
 
-    `{% block_field %}` renders this body with `nodelist.render()`, so the
-    adapter's node has to return real text at exactly that point.
+    `{% block_field %}` renders and escapes this body as a `CharBlock`. The
+    adapter recognizes that standard escaping as an intentional inert-text
+    boundary and applies it to the actual component output.
     """
     component('<em class="badge">{{ text }}</em>', name="block-badge")
     out = block(
@@ -87,9 +88,8 @@ def test_a_citry_component_inside_a_block_field_body(block, component, db):
         '{% block_field "title" %}<c-block-badge text="Cited"/>{% endblock_field %}'
         "{% endwagtail_block %}"
     )
-    # `title` is a CharBlock, so Wagtail escapes what it is given. The markup
-    # arriving escaped is the proof: the tag was handed the component's real
-    # rendered text, not a stand-in and not the source.
+    # `title` is a CharBlock, so the final component markup remains escaped
+    # rather than being restored as an active structured subtree.
     assert "Cited" in out
     assert "&lt;em" in out
     assert "<c-block-badge" not in out

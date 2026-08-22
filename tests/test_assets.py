@@ -81,6 +81,17 @@ class TestThroughSekizai:
         assert scripts(html).count('console.log("btn")') == 1
         assert styles(html).count(".btn{color:red}") == 1
 
+    def test_a_component_repeated_by_django_contributes_once(self, render_page):
+        html = render_page(
+            """{% load sekizai_tags %}{% render_block "css" %}
+            {% for label in labels %}<c-button c-label="label"/>{% endfor %}
+            {% render_block "js" %}""",
+            labels=["a", "b", "c"],
+        )
+        assert html.count('class="btn"') == 3
+        assert scripts(html).count('console.log("btn")') == 1
+        assert styles(html).count(".btn{color:red}") == 1
+
     def test_citry_emits_nothing_of_its_own(self, render_page):
         """With the strategy off, every asset on the page came through Sekizai."""
         html = render_page("<c-asset-group/><c-button label='loose'/>")
