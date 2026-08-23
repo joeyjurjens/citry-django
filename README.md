@@ -33,12 +33,14 @@ instance lives:
 # settings.py
 CITRY_APP = "myproject.citry_app:app"
 
-TEMPLATES = [{
-    "BACKEND": "citry_django.backend.CitryTemplates",   # was DjangoTemplates
-    "DIRS": [...],
-    "APP_DIRS": True,
-    "OPTIONS": {"context_processors": [...]},
-}]
+TEMPLATES = [
+    {
+        "BACKEND": "citry_django.backend.CitryTemplates",  # was DjangoTemplates
+        "DIRS": [...],
+        "APP_DIRS": True,
+        "OPTIONS": {"context_processors": [...]},
+    }
+]
 ```
 
 ```python
@@ -66,6 +68,7 @@ from citry import Citry, Component
 from citry_django import CitryDjangoExtension
 
 app = Citry(extensions=[CitryDjangoExtension()])
+
 
 class Hero(Component):
     citry = app
@@ -336,7 +339,7 @@ A component is a fragment, not a page:
 ```python
 class Page(Component):
     citry = app
-    template = '{% extends "base.html" %}...'   # not supported
+    template = '{% extends "base.html" %}...'  # not supported
 ```
 
 Extend in the Django template and put components inside it.

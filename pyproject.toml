@@ -21,6 +21,7 @@ dev = [
     "pillow",
     "wagtail-block-components",
     "django-components",
+    "ruff>=0.9",
     "tox>=4.11",
     "tox-uv>=1.11",
     "citry-ui>=0.2.0",
