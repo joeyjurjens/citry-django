@@ -1,14 +1,19 @@
 """
 The project's Citry instance and its components.
 
-Every Wagtail tag used below (``{% image %}``, ``{% pageurl %}``,
-``{% richtext %}``, ``{% include_block %}``) is resolved by *Django's* engine
-through the adapter. The adapter contains no Wagtail-specific code whatsoever:
-these work for the same reason they work in an ordinary Django template, which
-is that the component's own ``{% load %}`` line travels with the region.
+Components are built on `citry_ui`, Citry's own component library, the way a
+real site would: the library supplies cards, buttons and badges, and the
+components here compose them into the things this site is actually made of.
+
+Every Wagtail tag used below is resolved by *Django's* engine through the
+adapter. There is no Wagtail-specific code in the adapter: these work for the
+same reason they work in an ordinary Django template, which is that the
+component's own `{% load %}` line travels with the region.
 """
 
+import citry_ui
 from citry import Citry, Component
+from citry_django_djc import tokenize as djc_tokenize
 
 from citry_django import CitryDjangoExtension
 from citry_django_sekizai import SekizaiAssets
@@ -17,18 +22,22 @@ from citry_django_sekizai import SekizaiAssets
 # is read as a Django filter expression when Django's live filter registry
 # actually knows the filter, and stays a Python expression otherwise.
 app = Citry(
-    extensions=[CitryDjangoExtension(), SekizaiAssets()],
+    # django-components compiles templates with its own tokenizer, which is
+    # string-aware where Django's lexer is not. Reading the same one keeps both
+    # halves of a mixed template agreeing on where a tag ends.
+    extensions=[CitryDjangoExtension(tokenizer=djc_tokenize), SekizaiAssets()],
     # Citry's expression sandbox exposes no builtins unless you hand them over.
     template_globals={"len": len},
 )
+app.register_library(citry_ui)
 
 
 class Hero(Component):
-    """Wagtail's `{% image %}` and `{% richtext %}` inside a Citry component."""
+    """The masthead of the home page, with the site's own image and intro."""
 
     citry = app
     template = """
-    {% load wagtailimages_tags wagtailcore_tags %}
+    {% load wagtailimages_tags %}
     <header class="hero">
       <h1>{{ title }}</h1>
       {% if image %}
@@ -45,19 +54,20 @@ app.register(Hero, "hero")
 
 class ArticleCard(Component):
     """
-    `{% pageurl %}` is `takes_context` -- it needs the real request.
+    One article in a listing, laid out with the library's card.
 
-    It is also in *attribute* position here, which the adapter handles with a
-    delegate node rather than a wrapper element.
+    `{% pageurl %}` is `takes_context`, so it needs the real request, and it
+    sits in *attribute* position, which the adapter handles with a delegate node
+    rather than a wrapper element.
     """
 
     citry = app
     template = """
     {% load wagtailcore_tags %}
-    <div class="card">
-      <a href="{% pageurl page %}">{{ page.title }}</a>
-      <span class="summary">{{ page.summary }}</span>
-    </div>
+    <c-c-card class_="article-card">
+      <c-fill name="header"><a href="{% pageurl page %}">{{ page.title }}</a></c-fill>
+      <c-fill name="default"><p class="summary">{{ page.summary }}</p></c-fill>
+    </c-c-card>
     """
 
 
@@ -66,22 +76,21 @@ app.register(ArticleCard, "article-card")
 
 class ArticleList(Component):
     """
-    The interleaving case, for real.
+    A list of articles, where a featured one is marked with the library's badge.
 
-    A Wagtail/Django `{% if %}` wraps a *Citry* component invocation, inside a
-    Citry `<c-for>` loop. Neither engine could do this alone.
+    A Wagtail `{% if %}` wraps a *Citry* component invocation inside a Citry
+    `<c-for>` loop. Neither engine could do this on its own.
     """
 
     citry = app
     template = """
-    {% load wagtailcore_tags %}
     <section class="articles">
       <h2>{{ heading }}</h2>
       <ul>
         <c-for each="page in articles">
           {% if page.featured %}
             <li class="featured-wrap">
-              <span class="star">*</span>
+              <c-c-badge intent="warn">Featured</c-c-badge>
               <c-article-card c-page="page"/>
             </li>
           {% else %}
@@ -99,54 +108,78 @@ class ArticleList(Component):
 app.register(ArticleList, "article-list")
 
 
-class Card(Component):
+class Aside(Component):
     """
-    A named slot and a default one.
+    A named slot and a default one, filled from a Django template.
 
-    `<c-fill name="header">` fills the first; anything else in the element body
-    fills the second. The fallback shows when nothing is given.
+    The fallback shows when nothing is given for the named slot.
     """
 
     citry = app
     template = """
-    <aside class="card">
-      <header class="card-header"><c-slot name="header">Untitled</c-slot></header>
+    <aside class="aside">
+      <header class="aside-header"><c-slot name="header">Untitled</c-slot></header>
       <c-slot/>
     </aside>
     """
 
 
-app.register(Card, "card")
+app.register(Aside, "aside")
 
 
-class Button(Component):
-    """A component with both kinds of asset, declared the way Citry documents."""
+class StreamBody(Component):
+    """
+    A StreamField rendered with `{% include_block %}`.
 
-    citry = app
-    css = ".btn{color:red}"
-    js = 'console.log("btn")'
-    template = '<button class="btn">{{ label }}</button>'
-
-
-app.register(Button, "button")
-
-
-class AssetGroup(Component):
-    """Reaches `Button` only through nesting, so its assets travel up a level."""
+    Each block renders through its own Wagtail template, which pulls a second
+    template-loading pass inside a Citry component.
+    """
 
     citry = app
-    css = ".asset-group{border:1px solid}"
-    template = '<div class="asset-group"><c-button label="grouped"/></div>'
+    template = """
+    {% load wagtailcore_tags %}
+    <div class="stream">
+      {% for block in blocks %}
+        <div class="block block-{{ block.block_type }}">{% include_block block %}</div>
+      {% endfor %}
+    </div>
+    """
 
 
-app.register(AssetGroup, "asset-group")
+app.register(StreamBody, "stream-body")
 
 
-class Plain(Component):
+# The components below exist for the asset tests. They declare small, exact
+# stylesheets so those tests can assert on the content that reaches the page,
+# which a real design system's output would make unreadable.
+
+
+class Swatch(Component):
+    citry = app
+    css = ".swatch{color:red}"
+    js = 'console.log("swatch")'
+    template = '<span class="swatch">{{ label }}</span>'
+
+
+app.register(Swatch, "swatch")
+
+
+class SwatchGroup(Component):
+    """Reaches `Swatch` only through nesting, so its assets travel up a level."""
+
+    citry = app
+    css = ".swatch-group{border:1px solid}"
+    template = '<div class="swatch-group"><c-swatch label="grouped"/></div>'
+
+
+app.register(SwatchGroup, "swatch-group")
+
+
+class Unstyled(Component):
     """Declares no assets at all, and so should contribute none."""
 
     citry = app
     template = "<hr>"
 
 
-app.register(Plain, "plain")
+app.register(Unstyled, "unstyled")

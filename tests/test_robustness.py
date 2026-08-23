@@ -1,15 +1,15 @@
 """
-Adversarial input, and the boundary between our bugs and Django's own limits.
+Awkward input, and the boundary between the adapter's limits and Django's own.
 
-Each case here was found by throwing awkward templates at the adapter rather
-than by reasoning about it. Two were real bugs:
+Two cases deserve their names spelled out, because both look like ordinary tags
+and are not:
 
-* ``{% comment %}`` was broken. Django implements it with ``skip_past()`` rather
-  than ``parse()``, so the span recorder never saw it and the two halves were
-  handed to Django as unrelated tags.
-* ``{% verbatim %}`` leaked an internal marker, because its body looked like it
-  contained Citry content. Django's *lexer* hardcodes verbatim and never
-  interprets that body, so Citry must not either.
+* ``{% comment %}`` is consumed with ``skip_past()`` rather than ``parse()``, so
+  a span recorder that only follows ``parse()`` never sees it and hands Django
+  two unrelated tags.
+* ``{% verbatim %}`` is handled by Django's *lexer*, not by a tag. Its body is
+  never interpreted, which means Citry must not interpret it either, however
+  much it looks like Citry content.
 """
 
 import threading
@@ -90,8 +90,9 @@ HANDLED = [
     ),
 ]
 
-#: Templates Django itself rejects. We must fail too, not silently differ.
-DJANGO_ALSO_REJECTS = [
+#: Templates at the edge of Django's own lexer, where the adapter must land on
+#: the same side as Django rather than deciding for itself.
+MATCHES_DJANGO = [
     pytest.param(
         '{% load django_bootstrap5 %}{% bootstrap_button "a %} b" %}',
         {},
@@ -167,13 +168,26 @@ def test_verbatim_body_is_never_interpreted(render):
     assert "citryseg" not in out, "an internal marker leaked into the page"
 
 
-@pytest.mark.parametrize(("template", "context"), DJANGO_ALSO_REJECTS)
-def test_we_fail_where_django_fails(render, render_vanilla, template, context):
-    """Failing the same way as Django is correct; silently differing would not be."""
-    with pytest.raises(Exception):  # noqa: B017
-        render_vanilla(template, **context)
-    with pytest.raises(Exception):  # noqa: B017
-        render(template, **context)
+@pytest.mark.parametrize(("template", "context"), MATCHES_DJANGO)
+def test_the_edges_of_djangos_lexer_are_djangos_to_decide(
+    render, render_vanilla, strip_cids, template, context
+):
+    """
+    Accept exactly what Django accepts, and reject exactly what it rejects.
+
+    Which of the two happens is not the assertion. Something in the template
+    stack may move that line -- a replaced tokenizer reads a `%}` inside a
+    quoted argument where Django's own lexer does not -- and the adapter has to
+    move with it, because deciding for itself is how the two engines drift
+    apart.
+    """
+    try:
+        expected = render_vanilla(template, **context)
+    except Exception as exc:
+        with pytest.raises(type(exc)):
+            render(template, **context)
+    else:
+        assert strip_cids(render(template, **context)).strip() == expected.strip()
 
 
 def test_concurrent_renders_do_not_leak(citry_app, component):

@@ -19,6 +19,7 @@ serializer. A tag that alters or discards a reached marker fails loudly.
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from secrets import token_hex
 from threading import RLock
 from typing import Any, cast
@@ -38,14 +39,22 @@ from django.template import engines
 from django.template.backends.django import DjangoTemplates
 from django.template.base import DebugLexer, Origin, Template, TokenType
 from django.template.context import make_context
+from django.template.exceptions import TemplateSyntaxError
 from django.template.utils import InvalidTemplateEngineError
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
 from .expressions import is_django_expression
 from .nodes import CitryParser, CitrySegment
+from .registry import get_tokenizer
 
 _SEGMENT_MARKER_LABEL = "CiTrY-SeGmEnT"
+
+#: Any segment marker, whatever render produced it. Used to catch a marker that
+#: outlived the render it belonged to, which a body-caching tag will do.
+_ANY_SEGMENT_MARKER = re.compile(
+    rf"(?:<!--|&lt;!--){re.escape(_SEGMENT_MARKER_LABEL)}:(?P<nonce>[0-9a-f]+):\d+(?:-->|--&gt;)"
+)
 
 
 class _BlockState:
@@ -108,6 +117,8 @@ class _BlockState:
             )
             raise RuntimeError(msg)
 
+        self._reject_markers_from_another_render(html)
+
         parts: list[Any] = []
         cursor = 0
         for start, end, index, was_escaped in sorted(occurrences):
@@ -122,6 +133,55 @@ class _BlockState:
         if cursor < len(html):
             parts.append(html[cursor:])
         return CitryRender(parts=parts, context=self.citry_context)
+
+    def _reject_markers_from_another_render(self, html: str) -> None:
+        """
+        Refuse a marker that belongs to a render which has already finished.
+
+        A tag that stores its rendered body and replays it later, as any
+        fragment cache does, stores the marker rather than the markup: the
+        markup only exists once this block finishes. On a later hit the body
+        never renders, so there is nothing to put back and the marker would
+        reach the browser as a visible comment. The integrity check above cannot
+        see it: that one knows only this render's markers, and on a cache hit
+        there are none.
+        """
+        stale = {
+            match.group("nonce")
+            for match in _ANY_SEGMENT_MARKER.finditer(html)
+            if match.group("nonce") != self.nonce
+        }
+        if not stale:
+            return
+        msg = (
+            "A Django tag replayed a cached body that contains Citry content from an "
+            "earlier render, which cannot be restored. Cache the component instead of "
+            "the markup around it: give it a nested `class Cache:` and let Citry cache "
+            "its output, or move the tag so it does not enclose Citry content."
+        )
+        raise RuntimeError(msg)
+
+
+def _explain_tokenizer_disagreement(exc: TemplateSyntaxError) -> TemplateSyntaxError:
+    """
+    Say why Django's parser rejected tags Django's own lexer produced.
+
+    Which byte ranges belong to Django is decided by the extension's
+    `tokenizer`, Django's own lexer unless the project passed another. If
+    something else compiles the template and it ends tags somewhere else, the
+    parser is handed a fragment of a tag, and the error that surfaces explains
+    nothing on its own.
+    """
+    return TemplateSyntaxError(
+        f"{exc} -- Django's parser rejected a tag that the configured tokenizer "
+        "produced. This usually means your templates are compiled by a different "
+        "tokenizer, so its idea of where a tag stops differs from the one read "
+        "here. Pass that tokenizer to CitryDjangoExtension(tokenizer=...)."
+    )
+
+
+def _django_lexer(source: str) -> list[Any]:
+    return DebugLexer(source).tokenize()
 
 
 def get_django_engine() -> Any:
@@ -179,7 +239,10 @@ class ForeignNode(Node):
                 engine = get_django_engine().engine
                 source = "".join(pieces)
                 origin = Origin(self.origin, template_name=self.origin)
-                nodelist = CitryParser(DebugLexer(source).tokenize(), engine, origin).parse()
+                try:
+                    nodelist = CitryParser(get_tokenizer()(source), engine, origin).parse()
+                except TemplateSyntaxError as exc:
+                    raise _explain_tokenizer_disagreement(exc) from exc
                 for node in nodelist.get_nodes_by_type(CitrySegment):
                     node.owner = self
 
@@ -301,12 +364,19 @@ class CitryDjangoExtension(Extension):
     """
     Install with ``Citry(extensions=[CitryDjangoExtension()])``.
 
-    There is nothing to configure. Which engine owns a given ``{{ ... }}``, and
-    whether a Django block hosts Citry content, are both decided from the
-    template itself.
+    Which engine owns a given ``{{ ... }}``, and whether a Django block hosts
+    Citry content, are decided from the template itself. The one thing worth
+    passing is ``tokenizer``, when something other than Django compiles your
+    templates.
     """
 
     name = "citry_django"
+
+    def __init__(self, *, tokenizer: Callable[[str], list[Any]] | None = None) -> None:
+        # Every claim about where Django's syntax starts and stops is read with
+        # this. Django's own lexer unless the template stack compiles templates
+        # with something else, in which case the two have to agree.
+        self.tokenizer = tokenizer or _django_lexer
 
     def on_template_foreign_spans(self, ctx: Any) -> ForeignSpanSet | None:
         """
@@ -318,7 +388,7 @@ class CitryDjangoExtension(Extension):
         engines spell interpolation the same way.
         """
         engine = get_django_engine().engine
-        tokens = DebugLexer(ctx.content).tokenize()
+        tokens = get_tokenizer()(ctx.content)
         libraries = _loaded_libraries(tokens)
 
         # An attribute value compiles as its own template with no `{% load %}`

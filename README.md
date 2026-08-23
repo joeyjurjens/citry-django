@@ -1,114 +1,74 @@
 # citry-django
 
-Django template interop for [Citry](https://github.com/citry-dev/citry): real
-Django/Wagtail tags, filters and inheritance inside Citry components, and Citry
-components inside existing Django templates.
+Use [Citry](https://github.com/citry-dev/citry) components in a Django project
+without giving up Django's template system, and without learning a dialect.
 
-No per-tag code. The adapter never names a Django tag — it hands regions to
-Django's real engine, so anything you can `{% load %}` works.
+Any `{% tag %}` you can `{% load %}` works inside a Citry component, including
+tags from packages like Wagtail, crispy-forms and django-compressor. Citry
+components work in the Django templates you already have. Neither syntax
+changes, so you can migrate one region at a time.
 
-> **On authorship.** Almost all of the code here was written by an AI (Claude).
-> The architecture is mine: which engine owns what, where the boundary sits, and
-> which of the approaches below to keep. Read it as a proof of concept whose
-> design decisions are deliberate and whose implementation details deserve your
-> own review.
+## Requirements
 
-## Status
-
-208 tests pass on this machine (Python 3.14t, Django 6.1, Wagtail 7.4.2,
-Citry 0.4.3 / citry_core 1.6.0 from PyPI). They all run against one
-real Wagtail project in `testproject/`, with Wagtail, an asset pipeline and
-six third-party tag libraries switched on at once. No tag library is written for
-the tests: they are packages people actually install.
-
-| Suite | What it covers |
+| | |
 |---|---|
-| `tests/test_django_in_citry.py` | Django tags, filters and blocks inside Citry components; slots; `{{ }}` ownership |
-| `tests/test_citry_in_django.py` | Citry syntax inside Django templates: full Citry semantics, Django untouched |
-| `tests/test_transparency.py` | Differential: a transparent Django block changes nothing Citry emits |
-| `tests/test_robustness.py` | Adversarial input, and failing where Django itself fails |
-| `tests/test_third_party_libs.py` | Real packages: django-compressor, crispy-forms, sorl-thumbnail, django-bootstrap5, widget-tweaks, humanize |
-| `tests/test_assets.py` | Citry's own asset handling, and routing it through Sekizai instead |
-| `tests/test_wagtail.py` | Wagtail's whole front-end tag surface, plus real pages end to end |
-| `tests/test_block_components.py` | A library whose tags inspect their own nodelist rather than its text |
+| Python | 3.10 – 3.14 |
+| Django | 5.2 LTS, 6.0, 6.1 |
+| Citry | 0.4.3 or later |
 
-Citry needs two additions for this to work, both generic and neither aware of
-Django. They are specified in [`docs/citry-upstream.md`](docs/citry-upstream.md).
+Citry 0.4.3 is where the host-template APIs this is built on were released.
 
-## Layout
-
-```
-packages/citry-django/           the compatibility layer
-packages/citry-django-sekizai/   optional: assets through Sekizai
-testproject/                     the Wagtail project every test runs against
-tests/                           pytest suites
-```
-
-## The model: each engine owns its own files
-
-> **A Citry template is Citry's.** Citry parses it; every `{% ... %}` in it is
-> delegated to Django's real engine.
->
-> **A Django template is Django's.** Django parses it; every `<c-*>` region in
-> it is delegated to Citry's real engine.
-
-Neither side reimplements the other. A Citry region in a Django template is
-compiled by *Citry's own parser*, so everything Citry allows works there —
-Python expressions in `c-*`, `<c-if>`/`<c-for>`, `<c-slot>`/`<c-fill>`,
-`#c-key`, `<c-component c-is="...">`. And a Django tag anywhere is run by
-Django, written exactly as you would write it normally, `{% load %}` included.
-
-Delegation is exact rather than heuristic in both directions:
-
-- Citry's grammar has **no `{% %}` construct at all** (control flow is
-  `<c-if>`/`<c-for>`, interpolation is `{{ python_expr }}`), so inside a Citry
-  template `{% ... %}` is unambiguously Django's.
-- Django's lexer knows nothing about `<c-*>`, so inside a Django template those
-  regions are unambiguously Citry's.
-
-Django block tags are found by **Django's own parser**, not by pattern matching.
-The source is tokenized with `DebugLexer` (exact offsets, correct quoting) and
-parsed with Django's real `Parser`; wrapping `Parser.parse(parse_until)` records
-which token each block was entered on and which stopped it, so `if / elif /
-else / endif` is reconstructed without naming any of them. A third-party block
-tag with an unconventional end tag therefore works for free.
-
-### The one asymmetry, and why
-
-`{{ ... }}` means Citry (a Python expression) inside a Citry template and
-inside a `<c-*>` region; it still means Django everywhere else in a Django
-template. That is deliberate: a Django template is Django's file, so the
-`{{ page.title }}` already written in your project has to keep meaning what it
-always meant. Adoption must not rewrite what it touches.
-
-## Install
-
-The adapter itself is not published yet. It requires the host-template APIs in
-Citry 0.4.3 and Citry Core 1.6.0, described in
-[`docs/citry-upstream.md`](docs/citry-upstream.md). This workspace resolves the
-released packages from PyPI, and `citry-django` declares `citry>=0.4.3` as its
-minimum.
-
-```bash
-git clone https://github.com/joeyjurjens/citry-django-poc.git
-cd citry-django-poc
-uv sync
-```
-
-Once the adapter itself is published, installation will be:
+## Installation
 
 ```bash
 pip install citry-django
-pip install citry-django[sekizai]   # optional, assets through Sekizai
+pip install citry-django[sekizai]             # assets through django-sekizai
+pip install citry-django[django-components]   # alongside django-components
 ```
 
-## Use
+Point Django's template backend at `citry-django` and tell it where your Citry
+instance lives:
+
+```python
+# settings.py
+CITRY_APP = "myproject.citry_app:app"
+
+TEMPLATES = [
+    {
+        "BACKEND": "citry_django.backend.CitryTemplates",  # was DjangoTemplates
+        "DIRS": [...],
+        "APP_DIRS": True,
+        "OPTIONS": {"context_processors": [...]},
+    }
+]
+```
+
+```python
+# myproject/citry_app.py
+from citry import Citry
+from citry_django import CitryDjangoExtension
+
+app = Citry(extensions=[CitryDjangoExtension()])
+```
+
+That is the whole setup. There is no app to add to `INSTALLED_APPS`: the backend
+registers its tag itself.
+
+Your existing templates are unaffected: one with no Citry syntax in it renders
+exactly as before, and `{% extends %}`, `{% block %}` and every tag you already
+use keep working. Loaders you configure yourself are kept as well, so a package
+that ships one of its own still works.
+
+## Getting started
+
+### Django tags inside a Citry component
 
 ```python
 from citry import Citry, Component
 from citry_django import CitryDjangoExtension
 
 app = Citry(extensions=[CitryDjangoExtension()])
+
 
 class Hero(Component):
     citry = app
@@ -128,7 +88,7 @@ Pass the request so `takes_context` tags work:
 Hero(title="Hi", image=img, page=page).render(template_globals={"request": request})
 ```
 
-### Citry inside a Django template
+### Citry components inside a Django template
 
 Write Citry's own element syntax. No `{% load %}`, no wrapper tag:
 
@@ -144,32 +104,13 @@ Write Citry's own element syntax. No `{% load %}`, no wrapper tag:
 {% endblock %}
 ```
 
-Opt in by switching the template backend and pointing at your Citry instance:
-
-```python
-CITRY_APP = "myproject.citry_app:app"
-
-TEMPLATES = [{
-    "BACKEND": "citry_django.backend.CitryTemplates",   # was DjangoTemplates
-    "DIRS": [...],
-    "APP_DIRS": True,
-    "OPTIONS": {"context_processors": [...]},
-}]
-```
-
-This is still Django's own engine — same lexer, same tags, same inheritance.
-The backend only rewrites `<c-*>` elements into a tag as the source is loaded,
-so templates with no Citry syntax are passed through byte-for-byte. It applies
-to every template Django loads, including `base.html` and ones shipped by
-third-party apps.
-
 The surrounding template keeps its inheritance, its blocks and its Wagtail
 tags. That is what makes a *progressive* migration possible: replace one region
 at a time.
 
-#### It is Citry in there, not a dialect
+#### Everything Citry allows works in a region
 
-The region is handed to Citry's parser verbatim, so this is all just Citry:
+A region is compiled by Citry itself, so nothing is off limits:
 
 ```html
 {% load wagtailcore_tags %}
@@ -196,18 +137,12 @@ The region is handed to Citry's parser verbatim, so this is all just Citry:
 <c-component c-is="which_one" label="dynamic"/>
 ```
 
-Two details that make this work in practice:
+Two things worth knowing:
 
-- **`{% load %}` travels.** The load lines at the top of the Django template
-  are carried into every region cut out of it, so a Wagtail tag written inside
-  a component body resolves against them — no second `{% load %}`.
-- **Django context reaches Citry.** The context stack is flattened and passed
-  in as component inputs, so a region inside `{% for article in articles %}`
-  sees `article`. It scopes to the region rather than leaking into every nested
-  component.
-
-Django tags *outside* a region were never touched, so `{% extends %}`,
-`{% block %}` and the rest keep working exactly as before.
+- **`{% load %}` at the top of the file counts inside regions too**, so a tag
+  written in a component body needs no second `{% load %}`.
+- **Context variables reach the region.** A region inside
+  `{% for article in articles %}` can use `article`.
 
 ## A Django block can wrap Citry content
 
@@ -219,42 +154,31 @@ Django tags *outside* a region were never touched, so `{% extends %}`,
 {% endif %}
 ```
 
-The block is compiled once into a real Django template whose branches hold
-markers for the Citry runs, placed by **Django's own parser**. At render time
-Django drives: it evaluates the block and asks for only the branch it takes.
-
-Three things follow from that ordering:
+Django evaluates the block and only asks for the branch it takes, so:
 
 - **Guards are lazy.** `{% if user.is_staff %}<c-admin-panel/>{% endif %}` does
   not render the panel for anyone else.
-- **Scope is shared.** `{% with n=5 %}<p>{{ n }}</p>{% endwith %}` works, and so
-  does a Django-side `{% for %}` driving Citry components with its loop
-  variable — the Citry side reads the live Django context.
-- **Citry content normally never becomes a string here.** Segments hand Django
-  an inert marker and keep their render *parts*, which go straight back into
-  Citry's tree. That preserves identity, event/ownership graphs, CSP state, and
-  dependency placeholders until Citry serializes the whole tree. A Django tag
-  that deliberately HTML-escapes a body is an explicit inert-text boundary;
-  other marker transformations fail loudly.
+- **Names Django binds are visible to Citry.** `{% with n=5 %}<p>{{ n }}</p>{% endwith %}`
+  works, and a Django `{% for %}` can drive Citry components with its loop
+  variable.
 
 Nesting works in either direction: `{% if %}` inside `<c-for>`, `<c-for>`
 inside `{% if %}`.
 
 ## `{{ ... }}` — both meanings, decided exactly
 
-Both engines spell interpolation `{{ }}`, so ownership is decided **per
-expression at compile time**, from facts rather than a setting:
+Both engines spell interpolation `{{ }}`, so each one is decided on its own:
 
-1. Not a valid Python expression → Django (`{{ x|date:"Y-m-d" }}`).
-2. Valid Python *and* shaped like a filter chain — `a|b` where every filter
-   position is a bare name Django's **live filter registry** actually knows →
-   Django (`{{ body|richtext }}` is Django's precisely because Wagtail
-   registered `richtext`).
-3. Otherwise → Citry (`{{ ', '.join(names) }}`, and `{{ a | b }}` over two
-   values, because `b` is not a registered filter).
+| Expression | Goes to | Because |
+|---|---|---|
+| `{{ x\|date:"Y-m-d" }}` | Django | not valid Python |
+| `{{ page.title }}` | Django | a plain dotted path, where Django's lookup does more than Python's |
+| `{{ body\|richtext }}` | Django | `richtext` is a filter your `{% load %}` lines registered |
+| `{{ ', '.join(names) }}` | Citry | a call |
+| `{{ a \| b }}` | Citry | `b` is not a registered filter, so this is a bitwise or |
 
-There is nothing to configure, and third-party filters work because the rule
-consults the registry the template's own `{% load %}` lines populate.
+There is nothing to configure. Filters from any package work, because the rule
+asks the same registry your `{% load %}` lines fill.
 
 ## Assets: Citry's, or your own pipeline
 
@@ -290,9 +214,8 @@ Components keep declaring assets the way Citry documents — `css`, `js`,
 `css_file`, `js_file`. The extension reads what Citry already resolved through
 `citry.assets`, so there is no second way to declare anything.
 
-The Sekizai holder arrives through `inject("django")`, which the adapter fills
-from the host context, so a component nested several levels deep contributes
-just as the outermost one does. `tests/test_assets.py` covers both routes.
+A component nested several levels deep contributes its assets just as the
+outermost one does.
 
 Separate Citry regions in a Django-owned loop are separate render roots. The
 default `document` strategy therefore emits each root's assets; use the Sekizai
@@ -301,151 +224,245 @@ integration when the Django page needs cross-region deduplication.
 For strict CSP, standalone regions read the nonce from `csp_nonce` or
 `CSP_NONCE` in the Django context, then from `request.csp_nonce`.
 
+## Alongside django-components
+
+Both frameworks render in the same template, and a Citry component sits
+happily next to a `{% component %}` tag.
+
+One thing needs wiring. django-components compiles templates with its own
+tokenizer, which reads a `%}` inside a quoted argument where Django's lexer ends
+the tag, so a tag can carry template source as data:
+
+```django
+{% component "code_block" code="{% if user %}Hi{% endif %}" %}{% endcomponent %}
+```
+
+Install the extra and hand its tokenizer to the extension, so both halves agree
+on where that tag ends:
+
+```bash
+pip install citry-django[django-components]
+```
+
+```python
+from citry_django import CitryDjangoExtension
+from citry_django_djc import tokenize
+
+app = Citry(extensions=[CitryDjangoExtension(tokenizer=tokenize)])
+```
+
+Without it, only a tag like the one above is a problem: it raises rather than
+being split two different ways. Everything else works either way.
+
+## Settings
+
+| Setting | Default | What it does |
+|---|---|---|
+| `CITRY_APP` | *required* | Dotted path to your `Citry` instance, optionally with a `:attr` suffix. |
+| `CITRY_DEPS_STRATEGY` | `"document"` | How a `<c-*>` region in a Django template serializes its assets. Set to `"ignore"` when something else collects them. |
+
 ## Known incompatibilities and limits
 
-**1. A Django tag cannot transform, duplicate, or discard a reached Citry
-segment marker.** Control-flow tags such as `{% if %}`, `{% for %}`, and
-`{% with %}` preserve the marker and work. A body-transforming construct such
-as `{% filter upper %}<c-widget/>{% endfilter %}` changes it, so the adapter
-raises `RuntimeError` instead of returning plausible but structurally corrupted
-HTML. Pure Django content inside the same tag remains ordinary Django behavior.
-`tests/test_serialization_boundaries.py` pins this fail-loud boundary.
+### A Django tag cannot rewrite a component's output
 
-**2. A Django block tag cannot straddle a `<c-*>` region boundary in a Django
-template.** `{% if x %}` may wrap a whole `<c-card>...</c-card>`, and it may sit
-inside one, but it cannot open outside a region and close inside it. Django
-rejects that with its own `TemplateSyntaxError`, loudly.
+Control flow around a component is fine:
 
-This is *not* a rule about HTML nesting. A Django block and an element may
-interleave however they like: `{% if a %}<div>{% endif %}</div>` renders exactly
-as plain Django renders it, and a block works inside an attribute value where an
-element could never go. Neither engine sees the other's structure, so the two
-trees never have to agree.
+```html
+{% if user.is_staff %}<c-admin-panel/>{% endif %}
+{% for item in items %}<c-row c-item="item"/>{% endfor %}
+{% with total=basket.total %}<c-summary c-total="total"/>{% endwith %}
+```
 
-**3. `{% extends %}` belongs in the Django template, not in a component.** A
-component is a fragment, not a page.
+A tag that transforms the *text* its body produced is not:
 
-**4. `{% verbatim %}` protects its body from both engines**, so `{{ x }}`
-inside it is emitted literally. Citry still stamps its identity marker on the
-first element of a component's output, so a tag written literally as the very
-first thing in a verbatim body can pick one up.
+```html
+{# RuntimeError #}
+{% filter upper %}<c-widget/>{% endfilter %}
+```
 
-**5. A filter that shares a name with one of your Python variables** is read as
-the filter: `{{ a|length }}` means the filter, not `a.__or__(length)`.
+You get an error rather than damaged HTML. Django content inside the same tag
+behaves normally, so `{% filter upper %}plain text{% endfilter %}` is fine.
 
-**6. Finding regions in Django source is textual.** It skips `{% verbatim %}`
-blocks, but a literal `<c-something>` you wanted as *text* elsewhere will be
-treated as a region. Wrap it in `{% verbatim %}` to leave it alone. An unclosed
-`<c-x>` is left as text rather than guessed at.
+### A Django tag that caches its body cannot enclose a component
 
-### Formatter and checker behavior
+This applies inside a component template:
 
-Citry's low-level formatter accepts the same `ParseOptions` used by the parser.
-When the adapter supplies its foreign spans, the formatter copies those bytes
-unchanged and formats only the Citry-owned source around them. It does not try
-to format or interpret Django syntax.
+```html
+{# First render is fine. On a cache hit: RuntimeError #}
+{% cache 300 sidebar %}<c-sidebar/>{% endcache %}
+```
 
-`citry --app myproject.citry_app:app check` asks installed extensions for
-foreign spans and treats those ranges as unknown. When a Django range may
-control its surrounding body, the checker suppresses Citry's unresolved-name
-lint for that mixed template because names such as a Django loop
-variable are introduced outside Citry's namespace. Other Citry validation
-still runs. `citry check --static` deliberately does not import an app or its
-extensions, so it cannot recognize Django syntax in a mixed template.
+What the cache stores is a placeholder, because the real markup only exists once
+the surrounding block finishes. On a later hit the body never runs, so there is
+nothing left to put back.
 
-The generic `citry format` command is also app-independent. An editor or Django
-adapter that formats mixed templates must call the low-level formatter with
-the adapter-produced `ParseOptions`; there is no Django-specific syntax
-highlighting, formatting, or hinting in Citry itself.
+Let Citry cache the component instead, which is what you wanted anyway:
+
+```python
+class Sidebar(Component):
+    citry = app
+
+    class Cache:
+        ttl = 300
+```
+
+A `<c-*>` region in a *Django* template is unaffected either way, since it
+renders to finished HTML before the cache tag ever sees it.
+
+### A Django block cannot straddle a region boundary
+
+In a Django template, a block may wrap a region or sit inside one:
+
+```html
+{% if x %}<c-card>body</c-card>{% endif %}      {# fine #}
+<c-card>{% if x %}body{% endif %}</c-card>      {# fine #}
+```
+
+It cannot open outside a region and close inside it:
+
+```html
+{# TemplateSyntaxError: Unclosed tag 'if' #}
+{% if x %}<c-card>body{% endif %}</c-card>
+```
+
+This is not a rule about HTML. A tag and an element may interleave freely:
+
+```html
+{% if a %}<div>{% endif %}</div>              {# renders exactly as plain Django #}
+<div class="{% if a %}on{% endif %}">x</div>  {# fine, an element could not go here #}
+```
+
+### `{% extends %}` belongs in a Django template
+
+A component is a fragment, not a page:
+
+```python
+class Page(Component):
+    citry = app
+    template = '{% extends "base.html" %}...'  # not supported
+```
+
+Extend in the Django template and put components inside it.
+
+### `{% verbatim %}` still picks up an identity marker
+
+`{% verbatim %}` keeps both engines out of its body, so `{{ x }}` is emitted
+literally. But Citry stamps its marker on the first element a component
+produces, and a literal tag written first in the body can catch one:
+
+```html
+{% verbatim %}<c-button label="x"/>{% endverbatim %}
+```
+
+```html
+<c-button label="x" data-cid-cltlb3y4j=""/>
+```
+
+Put anything before it — a newline, a comment — and it is left alone.
+
+### A filter wins over a variable of the same name
+
+```html
+{{ a|length }}
+```
+
+With `a = [1, 2, 3]` and a variable also called `length`, this renders `3`: the
+filter, not a bitwise or. Rename the variable if you meant the operator.
+
+### A literal `<c-*>` in a Django template is read as a region
+
+```html
+{# ValueError: this looks like a region and does not resolve #}
+<p>Write <c-foo> to make one.</p>
+```
+
+Escape it, or hand it to `{% verbatim %}`:
+
+```html
+<p>Write &lt;c-foo&gt; to make one.</p>
+{% verbatim %}<p>Write <c-foo> to make one.</p>{% endverbatim %}
+```
+
+Text inside `<script>` and inside attribute values is left alone already, so
+`<script>const t = "<c-foo/>";</script>` needs nothing.
+
+### Tooling on mixed templates
+
+`citry format` and `citry check` need your app to see Django syntax in a
+template:
+
+```bash
+citry --app myproject.citry_app:app check
+```
+
+Given that, the formatter leaves Django's syntax exactly as written and formats
+only the Citry parts around it, and the checker skips its unresolved-name lint
+on mixed templates, since a Django `{% for %}` can introduce names Citry cannot
+see. `citry check --static` does not load your app, so it cannot recognise
+Django syntax at all.
 
 ### Injection safety
 
 Citry-rendered output is never spliced into Django template *source*, so a
-`{%` arriving in user data is inert rather than executed. `tests/test_django_in_citry.py`
-asserts this.
+`{%` arriving in user data is inert rather than executed.
 
-## Run it yourself
+## Development
+
+The repository is a [uv](https://docs.astral.sh/uv/) workspace holding all three
+packages, plus a Wagtail site the whole suite runs against.
 
 ```bash
-uv run pytest                      # everything
-uv run pytest tests/test_wagtail.py -v
+uv sync
+uv run pytest                  # everything
+uv run pytest tests/test_end_to_end.py -v
+uv run tox                     # the Django matrix: 5.2 LTS, 6.0, 6.1
+uv run ruff check . && uv run ruff format --check .
+```
 
-# the demo site, with content
+The demo site, with real content:
+
+```bash
 uv run python manage.py migrate
 uv run python testproject/seed.py
 uv run python manage.py runserver
 ```
 
-The demo components are in `testproject/citry_app.py`; the Django templates
-that embed them are in `testproject/home/templates/home/`.
-
-## What we tried first, and why we moved off it
-
-**A pure-Python adapter, no Citry changes.** Django's structure came from
-Django's own lexer and parser, which is fine. The problem is everything after
-that: the adapter then had to re-derive *where that structure sat relative to
-Citry's own nodes* from the raw source, and splice rendered output back in.
-That rediscovery was the largest and by far the most fragile part of the
-adapter, and it is where the bugs came from — region boundaries drawn in the
-wrong place, `{% comment %}` and `{% verbatim %}` needing hand-written special
-cases, and Citry's `data-cid` identity markers quietly disappearing because the
-render tree got flattened to a string on the way through.
-
-The failure mode is what makes it a bad trade: every one of those produced
-*plausible-looking HTML*. Nothing raised. You find out months later.
-
-**A `<c-foreign>` element.** Rewrite each Django construct into
-`<c-foreign open="{% if s %}" close="{% endif %}">…</c-foreign>` and let Citry
-parse it as an ordinary unknown component. This needs no parser change at all,
-and it works for a surprising amount. It dies on attribute position:
-
-```html
-<div class="{% if a %}on{% endif %}">x</div>
+```
+packages/citry-django/           the adapter
+packages/citry-django-sekizai/   optional: assets through Sekizai
+packages/citry-django-djc/       optional: alongside django-components
+testproject/                     the Wagtail site every test runs against
+tests/                           pytest suites
 ```
 
-An element cannot nest inside an attribute value, so that case needs a second
-mechanism, and the unity of the design is gone. Splicing also shifts byte
-offsets, so diagnostics start pointing at the wrong place.
+Components live in `testproject/citry_app.py` and are built on `citry-ui`. The
+project has Wagtail, an asset pipeline, seven third-party tag libraries and
+`django-components` switched on at once. Nothing in it is written for the tests:
+they are packages people actually install.
 
-**Foreign byte spans**, which is what shipped here, have neither problem: a
-range is a range wherever it sits, and the masking preserves byte length exactly
-so every offset still indexes the original source.
+### Making a release
 
-## What Citry has to provide
+All three packages carry the same version and are released together.
 
-Two additions, both generic:
+1. Bump `version` in each package's `pyproject.toml` under `packages/`.
+2. `uv lock` and commit both, e.g. `Release 0.2.0`.
+3. Tag and push:
 
-**`on_template_foreign_spans(ctx)`** lets an extension return a
-`ForeignSpanSet` declaring byte ranges that another engine owns. Citry keeps
-them out of its grammar and returns typed, provider-owned claims in tree order,
-without learning a single foreign delimiter. A second owner hook must explicitly
-resolve every claim before general compiled-template extensions run.
+   ```bash
+   git tag v0.2.0
+   git push origin main --tags
+   ```
 
-**`Citry.render_template(source, variables, ...)`** renders standalone Citry
-source without declaring a public component, which is what a `<c-*>` region
-found in a Django template needs. The adapter also uses Citry's public compiled
-body handles when Django calls back into already compiled Citry content.
+4. Draft a GitHub release for that tag and publish it.
 
-An unresolved claim fails closed during compilation and again at rendering if
-an extension bypasses the normal compiler path. Details, including the Rust
-side, are in [`docs/citry-upstream.md`](docs/citry-upstream.md).
+Publishing the release triggers `.github/workflows/publish.yml`, which builds
+every package in the workspace and uploads them to PyPI through trusted
+publishing. Nothing
+is uploaded from a laptop, and there is no API token to keep anywhere.
 
-## How it works
+To check what would be uploaded before tagging:
 
-Everything below lives in `packages/citry-django/src/citry_django/`.
-
-- `extension.py` — the Citry extension. Claims Django's byte ranges with
-  Django's own `DebugLexer`, and renders a Django-driven block through
-  `ForeignNode`, retaining structured Citry renders behind inert markers until
-  Django has selected and ordered them.
-- `nodes.py` — the Django side: `CitryParser` builds the block's template,
-  `CitrySegment` marks where Citry content resumes, and `CitryFragment` renders
-  a `<c-*>` region found in a Django template.
-- `expressions.py` — decides who owns each `{{ ... }}`, from Django's live
-  filter registry.
-- `rewrite.py` — locates `<c-*>` regions in Django source using Django's lexer
-  to mask its own syntax and Citry's parser to find the elements. No regexes.
-- `backend.py` / `loaders.py` — the template backend, mirroring Django's own
-  loader shape, and registering the region tag as a Django *builtin* so
-  templates the adapter does not own need no `{% load %}`.
-- `registry.py` — resolves `settings.CITRY_APP`.
+```bash
+uv build --all-packages
+uvx twine check dist/*
+```

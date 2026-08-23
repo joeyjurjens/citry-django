@@ -1,6 +1,6 @@
 from wagtail import hooks
 
-from . import blocks
+from testproject import blocks
 
 
 @hooks.register("register_components")

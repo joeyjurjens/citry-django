@@ -4,10 +4,11 @@ members = ["packages/*"]
 [tool.uv.sources]
 citry-django = { workspace = true }
 citry-django-sekizai = { workspace = true }
+citry-django-djc = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "citry-django[sekizai]",
+    "citry-django[sekizai,django-components]",
     "pytest>=8.0",
     "pytest-django>=4.8",
     "wagtail>=6.0",
@@ -19,7 +20,36 @@ dev = [
     "sorl-thumbnail",
     "pillow",
     "wagtail-block-components",
+    "django-components",
+    "ruff>=0.9",
+    "tox>=4.11",
+    "tox-uv>=1.11",
+    "citry-ui>=0.2.0",
 ]
+
+[tool.tox]
+env_list = ["dj52", "dj60", "dj61"]
+
+# `deps` is ignored by the lock runner, so each Django is installed over the
+# synced lock instead. Without this every environment silently runs the
+# lockfile's Django and the matrix proves nothing.
+[tool.tox.env_run_base]
+runner = "uv-venv-lock-runner"
+package = "skip"
+dependency_groups = ["dev"]
+commands = [["pytest"]]
+
+[tool.tox.env.dj52]
+description = "Django 5.2 LTS"
+commands_pre = [["uv", "pip", "install", "django>=5.2,<6.0"]]
+
+[tool.tox.env.dj60]
+description = "Django 6.0"
+commands_pre = [["uv", "pip", "install", "django>=6.0,<6.1"]]
+
+[tool.tox.env.dj61]
+description = "Django 6.1"
+commands_pre = [["uv", "pip", "install", "django>=6.1,<6.2"]]
 
 [tool.pytest.ini_options]
 DJANGO_SETTINGS_MODULE = "testproject.settings"

@@ -17,7 +17,7 @@ app = Citry(extensions=[CitryDjangoExtension(), SekizaiAssets()])
 
 ```python
 # settings.py
-CITRY_DEPS_STRATEGY = "ignore"   # stop Citry emitting the assets itself
+CITRY_DEPS_STRATEGY = "ignore"  # stop Citry emitting the assets itself
 ```
 
 Your base template collects them like any other Sekizai content:

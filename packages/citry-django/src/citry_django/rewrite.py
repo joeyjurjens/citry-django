@@ -13,7 +13,9 @@ so everything Citry allows works inside it.
 from __future__ import annotations
 
 from citry_core.template_parser import TemplateElement, parse_template
-from django.template.base import DebugLexer, TokenType
+from django.template.base import TokenType
+
+from .registry import get_tokenizer
 
 
 def load_tags(source: str) -> str:
@@ -26,7 +28,7 @@ def load_tags(source: str) -> str:
     """
     seen = {
         source[token.position[0] : token.position[1]]: None
-        for token in DebugLexer(source).tokenize()
+        for token in get_tokenizer()(source)
         if token.token_type is TokenType.BLOCK and token.contents.split()[:1] == ["load"]
     }
     return "".join(seen)
@@ -74,7 +76,7 @@ def _mask_django(source: str) -> str:
     chars = list(source)
     verbatim_from: int | None = None
 
-    for token in DebugLexer(source).tokenize():
+    for token in get_tokenizer()(source):
         start, end = token.position
         if token.token_type is TokenType.BLOCK:
             command = token.contents.split()[:1]

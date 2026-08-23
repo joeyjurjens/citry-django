@@ -1,0 +1,48 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv sync
+      - run: uv lock --check
+      - run: uv run ruff check .
+      - run: uv run ruff format --check .
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        django: [dj52, dj60, dj61]
+        exclude:
+          # Django 6.0 and 6.1 need Python 3.12 or later.
+          - { python: "3.10", django: dj60 }
+          - { python: "3.10", django: dj61 }
+          - { python: "3.11", django: dj60 }
+          - { python: "3.11", django: dj61 }
+    name: py${{ matrix.python }} / ${{ matrix.django }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: uv sync --python ${{ matrix.python }}
+      - run: uv run tox -e ${{ matrix.django }}
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+      - run: uv build --all-packages
+      - run: uvx twine check dist/*

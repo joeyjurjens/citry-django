@@ -9,10 +9,37 @@ description = "Citry and Django's template engines, composed: real Django tags a
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-dependencies = ["citry>=0.4.3", "django>=4.2"]
+license-files = ["LICENSE"]
+authors = [{ name = "Joey Jurjens", email = "joeyjurjens@gmail.com" }]
+keywords = ["citry", "django", "templates", "components"]
+dependencies = ["citry>=0.4.3", "django>=5.2"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Framework :: Django",
+    "Framework :: Django :: 5.2",
+    "Framework :: Django :: 6.0",
+    "Framework :: Django :: 6.1",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Internet :: WWW/HTTP :: Dynamic Content",
+    "Typing :: Typed",
+]
 
 [project.optional-dependencies]
 sekizai = ["citry-django-sekizai"]
+django-components = ["citry-django-djc"]
+
+[project.urls]
+Repository = "https://github.com/joeyjurjens/citry-django"
+Issues = "https://github.com/joeyjurjens/citry-django/issues"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/citry_django"]

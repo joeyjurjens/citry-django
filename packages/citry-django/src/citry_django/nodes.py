@@ -94,8 +94,8 @@ class CitryFragment(template.Node):
         variables = {key: value for key, value in context.flatten().items() if isinstance(key, str)}
         request = context.get("request")
         # The host's own context, reachable from any component through
-        # `inject("django")`. An extension that has to reach host state (a
-        # Sekizai holder, say) needs it in nested components too, where the
+        # `inject("django")`. An extension that has to reach host state -- an
+        # asset collector, say -- needs it in nested components too, where the
         # inputs above no longer reach.
         rendered = get_citry_app().render_template(
             self.source,
@@ -105,7 +105,7 @@ class CitryFragment(template.Node):
             origin=self.citry_origin,
         )
         # Set `CITRY_DEPS_STRATEGY = "ignore"` when the page collects assets
-        # itself, through Sekizai or otherwise, so they are not emitted twice.
+        # itself, so they are not emitted twice.
         strategy = getattr(settings, "CITRY_DEPS_STRATEGY", "document")
         return mark_safe(
             rendered.serialize(

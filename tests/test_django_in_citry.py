@@ -310,9 +310,11 @@ class TestBodyConsumingTags:
 class TestRegionBookkeeping:
     def test_block_inside_a_nested_child_component(self, render, component):
         """
-        Regression: a `{% if %}` inside a *child* component used to emit every
-        branch at once. Each render gets its own `context.extra`, so the child's
-        region table has to be merged upward or the markers never resolve.
+        A block inside a child component resolves against that child's own state.
+
+        Each render gets its own `context.extra`, so a child's region table has
+        to be merged upward for the enclosing serializer to see it. Without that
+        the markers never resolve and every branch reaches the page at once.
         """
         component(
             '{% if flag %}<b class="yes">on</b>{% else %}<i class="no">off</i>{% endif %}',
