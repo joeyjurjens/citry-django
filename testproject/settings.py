@@ -16,8 +16,7 @@ DEBUG = True
 ALLOWED_HOSTS = ["*"]
 
 INSTALLED_APPS = [
-    "testproject.home",
-    "testproject.blocks",
+    "testproject",
     "wagtail_block_components",
     "wagtail.contrib.forms",
     "wagtail.contrib.redirects",
@@ -41,6 +40,7 @@ INSTALLED_APPS = [
     # None of them is written for these tests, and the adapter names none.
     "crispy_forms",
     "crispy_bootstrap4",
+    "django_components",
     "widget_tweaks",
     "django_bootstrap5",
     "sorl.thumbnail",
@@ -74,8 +74,22 @@ TEMPLATES = [
         "BACKEND": "citry_django.backend.CitryTemplates",
         "NAME": "citry",
         "DIRS": [BASE_DIR / "templates"],
-        "APP_DIRS": True,
         "OPTIONS": {
+            # django-components ships a loader and a tag library of its own.
+            # Configuring them is what its own documentation asks for, and it
+            # is the case that proves the backend keeps a project's loaders
+            # instead of replacing them.
+            "loaders": [
+                (
+                    "django.template.loaders.cached.Loader",
+                    [
+                        "django.template.loaders.filesystem.Loader",
+                        "django.template.loaders.app_directories.Loader",
+                        "django_components.template_loader.Loader",
+                    ],
+                )
+            ],
+            "builtins": ["django_components.templatetags.component_tags"],
             "context_processors": [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
@@ -136,10 +150,13 @@ WAGTAILADMIN_BASE_URL = "http://example.com"
 WAGTAILSEARCH_BACKENDS = {"default": {"BACKEND": "wagtail.search.backends.database"}}
 DATA_UPLOAD_MAX_NUMBER_FIELDS = 10_000
 
+COMPONENTS = {"autodiscover": False}
+
 # Where a `<c-*>` region looks components up. No INSTALLED_APPS entry is needed
 # for the adapter: the backend registers its tags itself.
 CITRY_APP = "testproject.citry_app:app"
 
-# Citry emits each component's own CSS and JS by default. Individual tests turn
-# this off to hand them to Sekizai instead.
-CITRY_DEPS_STRATEGY = "document"
+# The component library ships a whole design system, so emitting it on every
+# render would bury each test's output. Tests about assets opt back into
+# "document" and assert on what reaches the page.
+CITRY_DEPS_STRATEGY = "ignore"

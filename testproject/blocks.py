@@ -1,6 +1,8 @@
 """
-Test blocks for wagtail-block-components tests.
-Simplified to just AccordionBlock for comprehensive testing.
+StreamField blocks for the demo site.
+
+An accordion is a good shape to test against: it nests a ListBlock of
+StructBlocks, and each item holds a StreamBlock with several child types.
 """
 
 import uuid
@@ -32,7 +34,7 @@ class AccordionItemBlock(blocks.StructBlock):
     )
 
     class Meta:
-        template = "components/accordion_item.html"
+        template = "testproject/accordion_item.html"
 
 
 class AccordionBlock(blocks.StructBlock):
@@ -45,4 +47,4 @@ class AccordionBlock(blocks.StructBlock):
         return context
 
     class Meta:
-        template = "components/accordion.html"
+        template = "testproject/accordion.html"

@@ -11,27 +11,51 @@ Django template::
         "OPTIONS": {"context_processors": [...]},
     }]
 
-This is still Django's own engine -- same lexer, same tags, same inheritance.
-The only difference is that the source is rewritten as it is loaded, so a
-``<c-component/>`` becomes a tag Django can compile. Nothing else changes, and
-templates with no Citry syntax in them are passed through untouched.
+This is still Django's own engine: same lexer, same tags, same inheritance. The
+only difference is that source is rewritten as it is read, so ``<c-component/>``
+becomes a tag Django can compile. A template with no Citry syntax in it is
+returned unchanged.
 """
 
 from __future__ import annotations
+
+from typing import Any
 
 from django.template.backends.django import DjangoTemplates
 
 from .rewrite import rewrite_source
 
-# Django's own defaults, with the rewriting loaders substituted in.
-_FILESYSTEM = "citry_django.loaders.FilesystemLoader"
-_APP_DIRS = "citry_django.loaders.AppDirectoriesLoader"
-_CACHED = "django.template.loaders.cached.Loader"
 _TAGS = "citry_django.templatetags.citry"
 
 
+class _RewriteMixin:
+    """Rewrites Citry element syntax as a loader reads a template."""
+
+    def get_contents(self, origin: Any) -> str:
+        return rewrite_source(super().get_contents(origin), origin=origin.name)
+
+
+def _enable_rewriting(loaders: Any) -> None:
+    """
+    Teach every configured loader to rewrite, whoever wrote it.
+
+    Django resolves ``get_contents`` on the loader that finally reads the file,
+    so rewriting is added there rather than by substituting loader classes. A
+    project that configures its own ``loaders`` -- for a component library, a
+    pattern library, or just to control caching -- keeps them and gets Citry
+    syntax in the templates they load.
+    """
+    for loader in loaders:
+        nested = getattr(loader, "loaders", None)
+        if nested:
+            _enable_rewriting(nested)
+        elif not isinstance(loader, _RewriteMixin):
+            cls = type(loader)
+            loader.__class__ = type(f"Rewriting{cls.__name__}", (_RewriteMixin, cls), {})
+
+
 class CitryTemplates(DjangoTemplates):
-    def __init__(self, params):
+    def __init__(self, params: dict) -> None:
         params = params.copy()
         options = params.setdefault("OPTIONS", {}).copy()
         params["OPTIONS"] = options
@@ -43,21 +67,9 @@ class CitryTemplates(DjangoTemplates):
             builtins.append(_TAGS)
         options["builtins"] = builtins
 
-        # `Engine` builds this list itself, but from its own loader classes and
-        # only when `loaders` is absent; the same shape is rebuilt here with
-        # the rewriting ones. Setting both `loaders` and `app_dirs` is an error,
-        # hence clearing it.
-        if "loaders" not in options:
-            loaders: list = [_FILESYSTEM]
-            if params.get("APP_DIRS"):
-                loaders.append(_APP_DIRS)
-            options["loaders"] = [(_CACHED, loaders)]
-        params["APP_DIRS"] = False
-
         super().__init__(params)
+        _enable_rewriting(self.engine.template_loaders)
 
-    def from_string(self, template_code):
-        # `from_string` never goes through a loader, so the rewrite has to
-        # happen here too -- otherwise Citry syntax would work in a file and
-        # silently not in a string.
+    def from_string(self, template_code: str) -> Any:
+        # `from_string` never reaches a loader, so it rewrites here as well.
         return super().from_string(rewrite_source(template_code, origin="<string template>"))

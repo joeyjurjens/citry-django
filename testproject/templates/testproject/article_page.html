@@ -26,10 +26,10 @@
   a Wagtail tag written normally still works there, because the load line at the
   top of this file travels into the region with it.
   {% endcomment %}
-  <c-card>
+  <c-aside>
     <c-fill name="header">Filed under <b>{{ page.get_parent().title }}</b></c-fill>
     <c-fill name="default">
       <p><a href="{% pageurl page.get_parent %}">Back</a></p>
     </c-fill>
-  </c-card>
+  </c-aside>
 {% endblock %}

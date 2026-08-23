@@ -7,7 +7,7 @@ from wagtail.models import Page
 
 
 class HomePage(Page):
-    """The landing page. Its template embeds Citry components via `{% citry %}`."""
+    """The landing page, whose template embeds Citry components directly."""
 
     intro = RichTextField(blank=True)
     hero_image = models.ForeignKey(

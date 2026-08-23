@@ -33,7 +33,7 @@ def seed() -> dict:
     from wagtail.images.models import Image
     from wagtail.models import Page, Site
 
-    from testproject.home.models import ArticlePage, HomePage
+    from testproject.models import ArticlePage, HomePage
 
     root = Page.objects.get(depth=1)
     HomePage.objects.all().delete()

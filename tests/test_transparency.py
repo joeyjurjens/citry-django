@@ -1,19 +1,17 @@
 """
-Differential test: a Django block must be *transparent* to Citry.
+A Django block must be *transparent* to Citry.
 
-This is the suite that catches the bug class rather than one bug. Every other
-test asserts on content -- "the badge rendered", "the URL resolved" -- which is
-exactly why component identity could go missing for months without a red test.
-
-The property asserted instead is::
+The property asserted here is::
 
     Rendering X inside a transparent Django construct produces the same Citry
     output as rendering X on its own.
 
 "Transparent" means a construct that takes its branch and emits its body
-unchanged, adding no markup of its own. If any of Citry's serialize-time work --
-`data-cid` identity markers, dependency collection, ownership -- is lost on the
-way through the adapter, these fail, whatever the cause.
+unchanged, adding no markup of its own. Asserting the property rather than the
+content is what makes this catch a whole class of loss: if any of Citry's
+serialize-time work -- `data-cid` identity markers, dependency collection,
+ownership -- goes missing on the way through the adapter, these fail, whatever
+the cause. A test that checks "the badge rendered" would not.
 """
 
 import re

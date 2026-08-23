@@ -134,6 +134,9 @@ def test_host_nonce_reaches_strict_citry_serialization(
     rf,
     settings,
 ) -> None:
+    # The nonce is applied while Citry serializes its dependencies, so this is
+    # one of the tests that needs Citry emitting them.
+    settings.CITRY_DEPS_STRATEGY = "document"
     import testproject.citry_app as app_module
 
     app = Citry(
@@ -171,3 +174,54 @@ def test_host_nonce_reaches_strict_citry_serialization(
 
     assert 'nonce="requestNonce"' in html
     assert 'src="/citry/ext/events/runtime-csp.js"' in html
+
+
+def _locmem(settings) -> None:
+    from django.core.cache import cache
+
+    settings.CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
+    cache.clear()
+
+
+def test_a_cached_body_replayed_later_fails_loudly(settings) -> None:
+    """
+    A body-caching tag stores the marker, not the markup.
+
+    The markup only exists once the block around it finishes, so what
+    `{% cache %}` keeps is the placeholder. On a later hit the body never
+    renders, leaving nothing to put back -- and the reached-marker check cannot
+    see it, because this render reached no markers at all. Without this guard
+    the raw comment goes to the browser.
+    """
+    _locmem(settings)
+    app = Citry(extensions=[CitryDjangoExtension()])
+
+    class Widget(Component):
+        citry = app
+        template = "<b>cached</b>"
+
+    app.register(Widget, "cache-replay-widget")
+
+    class Page(Component):
+        citry = app
+        template = "{% load cache %}{% cache 300 replay %}<c-cache-replay-widget/>{% endcache %}"
+
+    assert "<b" in str(Page())
+    with pytest.raises(RuntimeError, match="cannot be restored"):
+        str(Page())
+
+
+def test_a_cached_region_in_a_django_template_replays_fine(settings) -> None:
+    """
+    The other direction has no such problem, and stays supported.
+
+    A `<c-*>` region in a Django template renders to finished HTML before
+    `{% cache %}` ever sees it, so the cache holds real markup.
+    """
+    _locmem(settings)
+    source = "{% load cache %}{% cache 300 region %}<c-swatch label='cached'/>{% endcache %}"
+    first = engines["citry"].from_string(source).render({})
+    second = engines["citry"].from_string(source).render({})
+
+    assert 'class="swatch"' in first
+    assert second == first
