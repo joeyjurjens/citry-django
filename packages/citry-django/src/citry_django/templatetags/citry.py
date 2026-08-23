@@ -18,12 +18,13 @@ register = template.Library()
 @register.tag("citryfragment")
 def citryfragment(parser: template.base.Parser, token: template.base.Token) -> CitryFragment:
     bits = token.split_contents()
-    if len(bits) != 2:
-        msg = "{% citryfragment %} takes one argument and is generated, not written by hand."
+    if len(bits) != 3:
+        msg = "{% citryfragment %} takes two arguments and is generated, not written by hand."
         raise template.TemplateSyntaxError(msg)
     try:
         source = bytes.fromhex(bits[1].strip("\"'")).decode()
+        origin = bytes.fromhex(bits[2].strip("\"'")).decode()
     except (ValueError, UnicodeDecodeError) as exc:
         msg = f"{{% citryfragment %}} received a malformed payload: {exc}"
         raise template.TemplateSyntaxError(msg) from exc
-    return CitryFragment(source)
+    return CitryFragment(source, origin)

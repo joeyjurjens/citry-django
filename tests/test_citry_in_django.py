@@ -26,9 +26,17 @@ def _fixtures(component):
     component('{% load crispy_forms_tags %}<div class="who">{% crispy form %}</div>', name="who")
     component('<b class="tag">{{ label }}</b>', name="tag")
     component('<div class="fb"><c-slot>fallback</c-slot></div>', name="fb")
+    component("<section>{{ body }}</section>", name="takesbody")
 
 
 class TestEverythingCitryAllows:
+    def test_loaded_tag_inside_nested_template_input(self, render_django):
+        out = render_django(
+            "{% load django_bootstrap5 %}"
+            "<c-takesbody c-body='<>{% bootstrap_button \"nested\" %}</>'/>"
+        )
+        assert ">nested</button>" in out
+
     @pytest.mark.parametrize(
         ("attribute", "context", "expected"),
         [
@@ -63,13 +71,15 @@ class TestEverythingCitryAllows:
 
     def test_c_if_else_sibling_chain(self, render_django):
         """Siblings must land in one region, or Citry sees a stray `<c-else>`."""
-        source = '<c-if cond="flag"><b>yes</b></c-if><c-else><i>no</i></c-else>'
+        source = '<c-if cond="flag"><b>yes</b></c-if>\n  <c-else><i>no</i></c-else>'
         assert ">yes<" in render_django(source, flag=True)
         assert ">no<" in render_django(source, flag=False)
 
     def test_c_for_and_c_empty(self, render_django):
         source = '<c-for each="i in items"><i>{{ i }}</i></c-for><c-empty><em>none</em></c-empty>'
-        assert render_django(source, items=[1, 2]).count("<i ") == 2
+        # render_template() deliberately uses a transparent synthetic root, so
+        # its own plain HTML gets no component identity attribute.
+        assert render_django(source, items=[1, 2]).count("<i>") == 2
         assert "none" in render_django(source, items=[])
 
     def test_named_fills(self, render_django):
@@ -106,6 +116,20 @@ class TestEverythingCitryAllows:
 
 
 class TestDjangoKeepsWorking:
+    def test_region_discovery_tolerates_django_controlled_partial_html(self, render_django):
+        source = "{% if open_div %}<div>{% endif %}<c-title-bar c-title=\"'inside'\"/>"
+
+        opened = render_django(source, open_div=True)
+        closed = render_django(source, open_div=False)
+
+        assert opened.startswith("<div>") and "inside" in opened
+        assert not closed.startswith("<div>") and "inside" in closed
+
+    def test_component_like_text_inside_raw_html_or_an_attribute_stays_literal(self):
+        source = '<script>const x = "<c-title-bar/>";</script><div data-x="<c-title-bar/>"></div>'
+
+        assert rewrite_source(source) == source
+
     def test_tags_outside_a_region(self, render_django):
         out = render_django("{% load django_bootstrap5 %}<div>{% bootstrap_button 'x' %}</div>")
         assert "<button" in out and ">x</button>" in out

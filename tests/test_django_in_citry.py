@@ -152,6 +152,25 @@ class TestCitryFeaturesSurvive:
         assert 'class="box"' in render(source, on=True)
         assert ">off<" in render(source, on=False)
 
+    def test_django_block_selects_citry_fills(self, render, component):
+        component(
+            '<div><header><c-slot name="head">fallback head</c-slot></header>'
+            "<main><c-slot>fallback body</c-slot></main></div>",
+            name="hostfills",
+        )
+        source = (
+            "<c-hostfills>{% if on %}"
+            '<c-fill name="head">selected head</c-fill>'
+            '<c-fill name="default">selected body</c-fill>'
+            "{% endif %}</c-hostfills>"
+        )
+
+        selected = render(source, on=True)
+        fallback = render(source, on=False)
+
+        assert "selected head" in selected and "selected body" in selected
+        assert "fallback head" in fallback and "fallback body" in fallback
+
     def test_control_flow_and_expressions_unaffected(self, render):
         out = render(
             '<c-for each="i in items"><c-if cond="i > 1"><b>{{ i * 10 }}</b></c-if></c-for>',

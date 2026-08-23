@@ -144,6 +144,23 @@ def test_a_block_inside_an_attribute_value(render):
     assert "class" not in render(source, a=False)
 
 
+def test_non_ascii_before_django_syntax_keeps_foreign_byte_offsets(render):
+    source = 'Příliš 👋 <div class="{% if a %}on{% endif %}">x</div>'
+    assert 'class="on"' in render(source, a=True)
+    assert "class" not in render(source, a=False)
+
+
+def test_non_ascii_before_citry_region_keeps_rewrite_byte_offsets(render_django):
+    source = 'Příliš 👋 <c-if cond="show"><b>yes</b></c-if> konec'
+    assert ">yes<" in render_django(source, show=True)
+    assert "yes" not in render_django(source, show=False)
+
+
+def test_non_ascii_inside_masked_django_token_keeps_rewrite_byte_offsets(render_django):
+    source = '{% with label="Příliš 👋" %}<c-if cond="show"><b>yes</b></c-if>{% endwith %}'
+    assert ">yes<" in render_django(source, show=True)
+
+
 def test_verbatim_body_is_never_interpreted(render):
     out = render("{% verbatim %}{{ raw }}{% endverbatim %}<p>after</p>")
     assert "{{ raw }}" in out
@@ -166,22 +183,25 @@ def test_concurrent_renders_do_not_leak(citry_app, component):
         "{% if a %}<c-conckid c-m='m'/>{% else %}<i>no</i>{% endif %}"
         "{% for x in xs %}<s>{{ x }}</s>{% endfor %}"
     )
-    str(holder(a=True, m="w", xs=["w"]))
+    citry_app.initialize()
 
     bad = []
 
     def work(n):
         even = n % 2 == 0
-        for _ in range(150):
-            out = str(holder(a=even, m=f"m{n}", xs=[f"s{n}"]))
-            ok = (f">m{n}</b>" in out) if even else (">no</i>" in out)
-            ok = ok and f">s{n}</s>" in out
-            ok = ok and not any(
-                f">m{o}</b>" in out or f">s{o}</s>" in out for o in range(8) if o != n
-            )
-            if not ok:
-                bad.append((n, out[:90]))
-                return
+        try:
+            for _ in range(150):
+                out = str(holder(a=even, m=f"m{n}", xs=[f"s{n}"]))
+                ok = (f">m{n}</b>" in out) if even else (">no</i>" in out)
+                ok = ok and f">s{n}</s>" in out
+                ok = ok and not any(
+                    f">m{o}</b>" in out or f">s{o}</s>" in out for o in range(8) if o != n
+                )
+                if not ok:
+                    bad.append((n, out[:90]))
+                    return
+        except Exception as exc:
+            bad.append((n, repr(exc)))
 
     threads = [threading.Thread(target=work, args=(n,)) for n in range(8)]
     for thread in threads:

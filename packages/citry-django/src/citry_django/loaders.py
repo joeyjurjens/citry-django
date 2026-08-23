@@ -16,7 +16,7 @@ from .rewrite import rewrite_source
 
 class _RewriteMixin:
     def get_contents(self, origin):
-        return rewrite_source(super().get_contents(origin))
+        return rewrite_source(super().get_contents(origin), origin=origin.name)
 
 
 class FilesystemLoader(_RewriteMixin, filesystem.Loader):
