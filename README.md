@@ -22,8 +22,6 @@ Citry 0.4.3 is where the host-template APIs this is built on were released.
 
 ```bash
 pip install citry-django
-pip install citry-django[sekizai]             # assets through django-sekizai
-pip install citry-django[django-components]   # alongside django-components
 ```
 
 Point Django's template backend at `citry-django` and tell it where your Citry
@@ -58,6 +56,56 @@ Your existing templates are unaffected: one with no Citry syntax in it renders
 exactly as before, and `{% extends %}`, `{% block %}` and every tag you already
 use keep working. Loaders you configure yourself are kept as well, so a package
 that ships one of its own still works.
+
+### Optional: django-components
+
+If your project uses [django-components](https://github.com/django-components/django-components),
+install the extra and hand its tokenizer to the extension:
+
+```bash
+pip install citry-django[django-components]
+```
+
+```python
+from citry_django import CitryDjangoExtension
+from citry_django_djc import tokenize
+
+app = Citry(extensions=[CitryDjangoExtension(tokenizer=tokenize)])
+```
+
+django-components compiles templates with its own tokenizer, which reads a `%}`
+inside a quoted argument where Django's lexer ends the tag. Handing the tokenizer
+to the extension ensures both halves agree on where that tag ends.
+
+### Optional: django-compressor
+
+citry-django ships optional packages to integrate with popular Django libraries.
+For asset preprocessing and minification with [django-compressor](https://django-compressor.readthedocs.io/):
+
+```bash
+pip install citry-django[compressor]
+```
+
+```python
+from citry_django_compressor import CitryCompressorExtension
+
+app = Citry(extensions=[CitryDjangoExtension(), CitryCompressorExtension()])
+```
+
+Components can mark assets for precompilation using the `Dependencies` class:
+
+```python
+from django.templatetags.static import static
+from citry.ext.dependencies import Style
+
+
+class MyComponent(Component):
+    class Dependencies:
+        css = [Style(url=static("component.scss"), attrs={"type": "text/x-scss"})]
+```
+
+Django-compressor will find the file via staticfiles, precompile it, and output
+a compressed URL.
 
 ## Getting started
 
@@ -179,80 +227,6 @@ Both engines spell interpolation `{{ }}`, so each one is decided on its own:
 
 There is nothing to configure. Filters from any package work, because the rule
 asks the same registry your `{% load %}` lines fill.
-
-## Assets: Citry's, or your own pipeline
-
-By default Citry serializes each component's declared CSS and JS into the page
-itself, and nothing here changes that.
-
-A project that already runs its assets through Sekizai and django-compressor
-usually wants them in *its* blocks instead, where they can be bundled and cached
-with everything else. Install the optional package and switch Citry's own
-injection off:
-
-```bash
-pip install citry-django[sekizai]
-```
-
-```python
-from citry_django_sekizai import SekizaiAssets
-
-app = Citry(extensions=[CitryDjangoExtension(), SekizaiAssets()])
-```
-
-```python
-# settings.py
-CITRY_DEPS_STRATEGY = "ignore"
-```
-
-```html
-{% load sekizai_tags %}
-<head>{% render_block "css" postprocessor "compressor.contrib.sekizai.compress" %}</head>
-```
-
-Components keep declaring assets the way Citry documents — `css`, `js`,
-`css_file`, `js_file`. The extension reads what Citry already resolved through
-`citry.assets`, so there is no second way to declare anything.
-
-A component nested several levels deep contributes its assets just as the
-outermost one does.
-
-Separate Citry regions in a Django-owned loop are separate render roots. The
-default `document` strategy therefore emits each root's assets; use the Sekizai
-integration when the Django page needs cross-region deduplication.
-
-For strict CSP, standalone regions read the nonce from `csp_nonce` or
-`CSP_NONCE` in the Django context, then from `request.csp_nonce`.
-
-## Alongside django-components
-
-Both frameworks render in the same template, and a Citry component sits
-happily next to a `{% component %}` tag.
-
-One thing needs wiring. django-components compiles templates with its own
-tokenizer, which reads a `%}` inside a quoted argument where Django's lexer ends
-the tag, so a tag can carry template source as data:
-
-```django
-{% component "code_block" code="{% if user %}Hi{% endif %}" %}{% endcomponent %}
-```
-
-Install the extra and hand its tokenizer to the extension, so both halves agree
-on where that tag ends:
-
-```bash
-pip install citry-django[django-components]
-```
-
-```python
-from citry_django import CitryDjangoExtension
-from citry_django_djc import tokenize
-
-app = Citry(extensions=[CitryDjangoExtension(tokenizer=tokenize)])
-```
-
-Without it, only a tag like the one above is a problem: it raises rather than
-being split two different ways. Everything else works either way.
 
 ## Settings
 
@@ -429,7 +403,7 @@ uv run python manage.py runserver
 
 ```
 packages/citry-django/           the adapter
-packages/citry-django-sekizai/   optional: assets through Sekizai
+packages/citry-django-compressor/ optional: assets through django-compressor
 packages/citry-django-djc/       optional: alongside django-components
 testproject/                     the Wagtail site every test runs against
 tests/                           pytest suites

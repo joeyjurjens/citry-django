@@ -34,8 +34,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-sekizai = ["citry-django-sekizai"]
 django-components = ["citry-django-djc"]
+compressor = ["citry-django-compressor"]
 
 [project.urls]
 Repository = "https://github.com/joeyjurjens/citry-django"

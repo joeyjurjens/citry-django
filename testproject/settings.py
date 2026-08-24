@@ -2,7 +2,7 @@
 Settings for the project the test suite runs against.
 
 Everything is switched on at once on purpose. The point of this project is to
-be a realistic host: Wagtail, an asset pipeline (Sekizai and django-compressor),
+be a realistic host: Wagtail, an asset pipeline (django-compressor),
 third-party tag libraries with awkward shapes, and Citry components, all in one
 template tree. A change that breaks any of them breaks a test.
 """
@@ -33,8 +33,7 @@ INSTALLED_APPS = [
     "taggit",
     "django_filters",
     # The asset pipeline a real project already has, which the optional
-    # `citry-django-sekizai` package hands Citry's own assets to.
-    "sekizai",
+    # `citry-django-compressor` package hands Citry's own assets to.
     "compressor",
     # Third-party tag libraries, picked for shapes that are awkward to support.
     # None of them is written for these tests, and the adapter names none.
@@ -95,7 +94,6 @@ TEMPLATES = [
                 "django.template.context_processors.request",
                 "django.contrib.auth.context_processors.auth",
                 "django.contrib.messages.context_processors.messages",
-                "sekizai.context_processors.sekizai",
             ],
         },
     },
@@ -109,7 +107,6 @@ TEMPLATES = [
         "OPTIONS": {
             "context_processors": [
                 "django.template.context_processors.request",
-                "sekizai.context_processors.sekizai",
             ],
         },
     },
@@ -141,6 +138,13 @@ MEDIA_URL = "/media/"
 
 COMPRESS_ROOT = STATIC_ROOT
 COMPRESS_ENABLED = False
+
+# Precompilers for django-compressor integration with citry-django-compressor.
+# Tests verify SCSS is precompiled correctly.
+COMPRESS_PRECOMPILERS = (
+    ("text/x-scss", "django_libsass.SassCompiler"),
+    ("text/x-sass", "django_libsass.SassCompiler"),
+)
 
 CRISPY_TEMPLATE_PACK = "bootstrap4"
 CRISPY_ALLOWED_TEMPLATE_PACKS = ["bootstrap4"]
