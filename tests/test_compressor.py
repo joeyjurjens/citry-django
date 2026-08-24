@@ -164,8 +164,7 @@ class TestJavaScriptCallbacks:
     def test_multiple_callback_instances(self, render_page):
         """Multiple instances should each get their own callback data."""
         html = render_page(
-            "<c-callback-component value='first'/>"
-            "<c-callback-component value='second'/>"
+            "<c-callback-component value='first'/><c-callback-component value='second'/>"
         )
         # Both instances should render
         assert html.count("callback-test") == 2
@@ -192,11 +191,7 @@ class TestDeduplication:
     @pytest.mark.usefixtures("compressor_enabled")
     def test_identical_scss_deduplicated(self, render_page):
         """Same SCSS from multiple components should only be compressed once."""
-        html = render_page(
-            "<c-scss-component/>"
-            "<c-scss-component/>"
-            "<c-scss-component/>"
-        )
+        html = render_page("<c-scss-component/><c-scss-component/><c-scss-component/>")
         # Should only have one compressed CSS file, not three
         link_count = html.count('rel="stylesheet"')
         # At least one link tag for the compressed CSS
@@ -207,10 +202,7 @@ class TestDeduplication:
     @pytest.mark.usefixtures("compressor_enabled")
     def test_identical_js_deduplicated(self, render_page):
         """Same JS from multiple components should only be compressed once."""
-        html = render_page(
-            "<c-callback-component value='a'/>"
-            "<c-callback-component value='b'/>"
-        )
+        html = render_page("<c-callback-component value='a'/><c-callback-component value='b'/>")
         # Both should render
         assert html.count("callback-test") == 2
 
@@ -345,7 +337,7 @@ class TestBuildCompressorContent:
             Style(content=".other { color: blue; }", attrs={"type": "text/x-scss"}),
         ]
         content = _build_compressor_content(deps, "css")
-        assert '<style>.test { color: red; }</style>' in content
+        assert "<style>.test { color: red; }</style>" in content
         assert 'type="text/x-scss"' in content
 
     def test_build_js_content(self):

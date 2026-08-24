@@ -198,6 +198,7 @@ class ScssComponent(Component):
     """Uses SCSS syntax to verify precompilation through django-compressor."""
 
     citry = app
+
     class Dependencies:
         css = [
             Style(
@@ -205,6 +206,7 @@ class ScssComponent(Component):
                 attrs={"type": "text/x-scss"},
             ),
         ]
+
     template = '<div class="scss-test">SCSS works</div>'
 
 
@@ -215,6 +217,7 @@ class ScssFileComponent(Component):
     """Uses a SCSS file via URL to verify file-based precompilation."""
 
     citry = app
+
     class Dependencies:
         css = [
             Style(
@@ -222,6 +225,7 @@ class ScssFileComponent(Component):
                 attrs={"type": "text/x-scss"},
             ),
         ]
+
     template = '<div class="scss-file-test">SCSS file works</div>'
 
 

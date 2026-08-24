@@ -21,10 +21,12 @@ from citry import Citry
 from citry_django import CitryDjangoExtension
 from citry_django_compressor import CitryCompressorExtension
 
-app = Citry(extensions=[
-    CitryDjangoExtension(),
-    CitryCompressorExtension(),
-])
+app = Citry(
+    extensions=[
+        CitryDjangoExtension(),
+        CitryCompressorExtension(),
+    ]
+)
 ```
 
 ### Inline Content with Precompilation
@@ -34,6 +36,7 @@ To mark inline content for precompilation, set its `type` attribute to match a `
 ```python
 from citry import Component
 from citry.ext.dependencies import Style, Script
+
 
 class MyComponent(Component):
     class Dependencies:
@@ -53,6 +56,7 @@ For file-based assets, use the `Dependencies` class with a URL and `type` attrib
 from django.templatetags.static import static
 from citry import Component
 from citry.ext.dependencies import Style
+
 
 class MyComponent(Component):
     class Dependencies:

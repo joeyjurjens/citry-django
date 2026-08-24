@@ -98,6 +98,7 @@ Components can mark assets for precompilation using the `Dependencies` class:
 from django.templatetags.static import static
 from citry.ext.dependencies import Style
 
+
 class MyComponent(Component):
     class Dependencies:
         css = [Style(url=static("component.scss"), attrs={"type": "text/x-scss"})]

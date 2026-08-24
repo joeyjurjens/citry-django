@@ -101,7 +101,7 @@ def _build_compressor_content(deps: list[Script | Style], kind: str) -> str:
                 type_attr = dep.attrs.get("type", "")
                 type_str = f' type="{type_attr}"' if type_attr else ""
                 attrs_prefix = f" {attrs_str}" if attrs_str else ""
-                parts.append(f'<style{type_str}{attrs_prefix}>{dep.content}</style>')
+                parts.append(f"<style{type_str}{attrs_prefix}>{dep.content}</style>")
         else:  # js
             if dep.url:
                 attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
@@ -113,7 +113,7 @@ def _build_compressor_content(deps: list[Script | Style], kind: str) -> str:
                 type_attr = dep.attrs.get("type", "")
                 type_str = f' type="{type_attr}"' if type_attr else ""
                 attrs_prefix = f" {attrs_str}" if attrs_str else ""
-                parts.append(f'<script{type_str}{attrs_prefix}>{dep.content}</script>')
+                parts.append(f"<script{type_str}{attrs_prefix}>{dep.content}</script>")
     return "\n".join(parts)
 
 
@@ -137,7 +137,7 @@ def _extract_urls_from_output(html: str, kind: str) -> list[dict[str, Any]]:
             results.append({"url": url, "attrs": attrs})
 
         # Parse inline <style> tags (when compression is disabled)
-        for match in re.finditer(r'<style[^>]*>(.*?)</style>', html, re.IGNORECASE | re.DOTALL):
+        for match in re.finditer(r"<style[^>]*>(.*?)</style>", html, re.IGNORECASE | re.DOTALL):
             content = match.group(1)
             tag_str = match.group(0)
             attrs = {}
@@ -151,22 +151,22 @@ def _extract_urls_from_output(html: str, kind: str) -> list[dict[str, Any]]:
             url = match.group(1)
             tag_str = match.group(0)
             attrs = {}
-            if re.search(r'\bdefer\b', tag_str, re.IGNORECASE):
+            if re.search(r"\bdefer\b", tag_str, re.IGNORECASE):
                 attrs["defer"] = True
-            if re.search(r'\basync\b', tag_str, re.IGNORECASE):
+            if re.search(r"\basync\b", tag_str, re.IGNORECASE):
                 attrs["async"] = True
             results.append({"url": url, "attrs": attrs})
 
         # Parse inline <script> tags (when compression is disabled)
-        for match in re.finditer(r'<script([^>]*)>(.*?)</script>', html, re.IGNORECASE | re.DOTALL):
+        for match in re.finditer(r"<script([^>]*)>(.*?)</script>", html, re.IGNORECASE | re.DOTALL):
             attrs_str = match.group(1)
             content = match.group(2)
             if re.search(r'src="', attrs_str, re.IGNORECASE):
                 continue
             attrs = {}
-            if re.search(r'\bdefer\b', attrs_str, re.IGNORECASE):
+            if re.search(r"\bdefer\b", attrs_str, re.IGNORECASE):
                 attrs["defer"] = True
-            if re.search(r'\basync\b', attrs_str, re.IGNORECASE):
+            if re.search(r"\basync\b", attrs_str, re.IGNORECASE):
                 attrs["async"] = True
             results.append({"content": content, "attrs": attrs})
 
