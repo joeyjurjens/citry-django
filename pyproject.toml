@@ -3,16 +3,17 @@ members = ["packages/*"]
 
 [tool.uv.sources]
 citry-django = { workspace = true }
-citry-django-sekizai = { workspace = true }
 citry-django-djc = { workspace = true }
+citry-django-compressor = { workspace = true }
 
 [dependency-groups]
 dev = [
-    "citry-django[sekizai,django-components]",
+    "citry-django[django-components,compressor]",
     "pytest>=8.0",
     "pytest-django>=4.8",
     "wagtail>=6.0",
     "django-compressor>=4.4",
+    "django-libsass>=0.9",
     "django-crispy-forms>=2.0",
     "crispy-bootstrap4",
     "django-widget-tweaks",
@@ -59,7 +60,7 @@ addopts = "--strict-markers --strict-config -q"
 
 [tool.ruff]
 line-length = 100
-src = ["packages/citry-django/src", "packages/citry-django-sekizai/src", "tests", "testproject"]
+src = ["packages/citry-django/src", "packages/citry-django-compressor/src", "tests", "testproject"]
 extend-exclude = ["citry-src", "venv", "**/migrations"]
 
 [tool.ruff.lint]

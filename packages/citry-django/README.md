@@ -26,10 +26,10 @@ full picture, the limits, and how it works.
 ## Optional extras
 
 ```bash
-pip install citry-django[sekizai]
+pip install citry-django[compressor]
 ```
 
-Routes each component's own CSS and JS through [django-sekizai], so an existing
-asset pipeline handles them. See `citry-django-sekizai`.
+Routes each component's CSS and JS through [django-compressor], so assets are
+preprocessed (SCSS, Less, ...) and minified. See `citry-django-compressor`.
 
-[django-sekizai]: https://github.com/django-cms/django-sekizai
+[django-compressor]: https://django-compressor.readthedocs.io/
