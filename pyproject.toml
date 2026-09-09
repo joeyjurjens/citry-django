@@ -46,10 +46,12 @@ commands_pre = [["uv", "pip", "install", "django>=5.2,<6.0"]]
 
 [tool.tox.env.dj60]
 description = "Django 6.0"
+base_python = ["python3.12"]
 commands_pre = [["uv", "pip", "install", "django>=6.0,<6.1"]]
 
 [tool.tox.env.dj61]
 description = "Django 6.1"
+base_python = ["python3.12"]
 commands_pre = [["uv", "pip", "install", "django>=6.1,<6.2"]]
 
 [tool.pytest.ini_options]

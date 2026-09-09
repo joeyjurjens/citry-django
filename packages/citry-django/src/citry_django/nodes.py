@@ -21,11 +21,14 @@ class CitryName:
     a name bound by ``{% for %}`` or ``{% with %}`` is found as well.
     """
 
-    __slots__ = ("name", "var")
+    __slots__ = ("is_var", "name", "var")
 
     def __init__(self, name: str) -> None:
         self.name = name
         self.var = name  # Django reads `.var` while parsing.
+        # Django >= 6.1.1 reads `.is_var` in `Parser.parse`. False is what
+        # Django itself computes here: `.var` is a string, not a `Variable`.
+        self.is_var = False
 
     def resolve(self, context: Any, ignore_failures: bool = False) -> Any:
         scope = context.flatten()

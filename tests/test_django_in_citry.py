@@ -376,3 +376,28 @@ class TestSafety:
         )
         assert "<script>" not in out
         assert "&lt;script&gt;" in out
+
+
+class TestBareNameInterpolation:
+    """A bare ``{{ name }}`` resolves through ``CitryName``; a dotted or
+    filtered one falls through to Django."""
+
+    def test_bare_name_inside_a_django_block(self, render):
+        out = render(
+            "<ul>{% for i in items %}<li>{{ i }}</li>{% endfor %}</ul>",
+            items=["a", "b"],
+        )
+        assert "<li>a</li>" in out and "<li>b</li>" in out
+
+    def test_bare_name_outside_any_block(self, render):
+        assert "hello" in render("<p>{{ msg }}</p>", msg="hello")
+
+    def test_bare_name_bound_by_with(self, render):
+        out = render("{% with n=count %}<b>{{ n }}</b>{% endwith %}", count=7)
+        assert ">7</b>" in out
+
+    def test_dotted_lookup_still_goes_through_django(self, render):
+        assert "1" in render("<p>{% if obj %}{{ obj.x }}{% endif %}</p>", obj={"x": 1})
+
+    def test_filtered_name_still_goes_through_django(self, render):
+        assert "HI" in render("<p>{% if t %}{{ t|upper }}{% endif %}</p>", t="hi")
