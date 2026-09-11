@@ -41,6 +41,12 @@ def get_tokenizer() -> Any:
     return get_citry_app().extensions.get_extension("citry_django").tokenizer
 
 
+def context_behavior() -> str:
+    """How much of the host's context a component's own template may read."""
+    extension = get_citry_app().extensions.get_extension("citry_django")
+    return getattr(extension, "context_behavior", "isolated")
+
+
 def django_attrs_enabled() -> bool:
     """Whether the adapter may take Django syntax out of a ``c-`` attribute.
 

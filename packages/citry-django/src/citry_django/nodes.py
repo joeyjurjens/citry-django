@@ -9,7 +9,7 @@ from django.conf import settings
 from django.template.base import Parser
 from django.utils.safestring import mark_safe
 
-from .registry import get_citry_app
+from .registry import context_behavior, get_citry_app
 
 
 class CitryName:
@@ -94,8 +94,23 @@ class CitryFragment(template.Node):
         # component inputs so they scope to this region; `request` travels as a
         # render global because nested components need it for Django's
         # `takes_context` tags.
-        variables = {key: value for key, value in context.flatten().items() if isinstance(key, str)}
         request = context.get("request")
+        processors = _context_processors(request)
+        variables = dict(processors)
+        variables.update(
+            {key: value for key, value in context.flatten().items() if isinstance(key, str)}
+        )
+        # A context processor is ambient in Django -- every template it renders
+        # has `user`, `LANGUAGE_CODE` and the rest, whatever called it. So they
+        # go in as render globals, which reach a component's own template at
+        # any depth.
+        #
+        # Whether the *view's* context joins them is the project's call: see
+        # `context_behavior`. A global is a fallback, so a component's own
+        # names still win either way.
+        globals_ = dict(variables) if context_behavior() == "django" else dict(processors)
+        if request is not None:
+            globals_["request"] = request
         # The host's own context, reachable from any component through
         # `inject("django")`. An extension that has to reach host state -- an
         # asset collector, say -- needs it in nested components too, where the
@@ -103,7 +118,7 @@ class CitryFragment(template.Node):
         rendered = get_citry_app().render_template(
             self.source,
             variables,
-            template_globals={"request": request} if request is not None else None,
+            template_globals=globals_ or None,
             provides={"django": variables},
             origin=self.citry_origin,
         )
@@ -119,6 +134,25 @@ class CitryFragment(template.Node):
 
     def __repr__(self) -> str:
         return f"<CitryFragment {self.source[:40]!r}>"
+
+
+def _context_processors(request: Any) -> dict[str, Any]:
+    """What Django's own context processors put in a template's context.
+
+    A host rendered through ``RequestContext`` has these already, and
+    ``flatten`` above would pick them up. One rendered without it does not, and
+    a component has no way to tell the difference - so they are asked for here,
+    from the engine's own processor list, and the host's values are layered on
+    top exactly as ``RequestContext`` layers them.
+    """
+    if request is None:
+        return {}
+    from .extension import get_django_engine
+
+    values: dict[str, Any] = {}
+    for processor in get_django_engine().engine.template_context_processors:
+        values.update(processor(request))
+    return values
 
 
 def _csp_nonce(context: Any, request: Any) -> str | None:

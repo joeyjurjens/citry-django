@@ -222,6 +222,50 @@ Two things worth knowing:
 - **Context variables reach the region.** A region inside
   `{% for article in articles %}` can use `article`.
 
+## What a component can read
+
+Two rules meet here, and neither is wrong.
+
+Citry's is that a component takes its inputs: what the template around it could see is not automatically its to read. Django's is the opposite - an `{% include %}` sees everything the including template saw - and a Django project is written expecting that. So it is a setting, named after [the django-components one](https://django-components.github.io/django-components/docs/concepts/advanced/component_context_scope/) that does the same job:
+
+```python
+app = Citry(extensions=[CitryDjangoExtension(context_behavior="django")])
+```
+
+`"isolated"` (the default) keeps Citry's rule. `"django"` lets a component's own template fall back to the host's context:
+
+```python
+def article_list(request):
+    return render(request, "articles.html", {"heading": "Latest"})
+```
+
+```html
+<!-- articles.html -->
+<c-article-header/>
+```
+
+```html
+<!-- ArticleHeader's own template, under context_behavior="django" -->
+<h1>{{ heading }}</h1>
+```
+
+A fallback is all it is: a component that defines `heading` in its own `template_data` uses that one. Nothing is shadowed, and nothing is copied.
+
+### Context processors are ambient in both
+
+Whatever your `context_processors` put in a template's context is there for every component, at any depth, whichever mode you choose - because that is what they are in Django. `user`, `LANGUAGE_CODE`, `MEDIA_URL`, and anything your own project adds:
+
+```html
+<p>Hello {{ user.get_short_name }}</p>
+<a href="{{ request.path }}">this page</a>
+```
+
+They are read from the engine's own processor list rather than inherited from how the host happened to be rendered, so a template rendered without `RequestContext` has them too. Nothing here names a processor, so a project's own arrives on the same footing as Django's.
+
+The setting is about the *view's* context, which is the part Django hands down and Citry does not.
+
+For an extension that has to reach host state whatever the mode, the whole context is provided under `"django"`: `self.inject("django")`.
+
 ## A Django block can wrap Citry content
 
 ```html

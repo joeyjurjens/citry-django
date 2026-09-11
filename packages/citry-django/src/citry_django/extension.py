@@ -44,6 +44,7 @@ from django.template.utils import InvalidTemplateEngineError
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
+from .context import CONTEXT_BEHAVIORS
 from .django_attrs import rewrite_attrs
 from .expressions import is_django_expression
 from .nodes import CitryParser, CitrySegment
@@ -374,6 +375,13 @@ class CitryDjangoExtension(Extension):
     attribute (``c-bind="{{ self.icon.kwargs }}"``, ``c-url="{% url 'x' %}"``).
     Off by default: Citry rejects that outright, so a template written this way
     renders only through this package. See ``django_attrs``.
+
+    ``context_behavior`` decides what a component's own template can read of
+    the context the host template was rendered with. ``"isolated"``, the
+    default, is Citry's rule: a component takes its inputs and nothing else.
+    ``"django"`` is Django's: the host's context is there to fall back on, the
+    way it is in an ``{% include %}``. The name and the values follow
+    django-components, whose setting does the same job.
     """
 
     name = "citry_django"
@@ -383,12 +391,18 @@ class CitryDjangoExtension(Extension):
         *,
         tokenizer: Callable[[str], list[Any]] | None = None,
         django_attrs: bool = False,
+        context_behavior: str = "isolated",
     ) -> None:
         # Every claim about where Django's syntax starts and stops is read with
         # this. Django's own lexer unless the template stack compiles templates
         # with something else, in which case the two have to agree.
         self.tokenizer = tokenizer or _django_lexer
         self.django_attrs = django_attrs
+        if context_behavior not in CONTEXT_BEHAVIORS:
+            allowed = ", ".join(sorted(CONTEXT_BEHAVIORS))
+            msg = f"context_behavior must be one of {allowed}; got {context_behavior!r}"
+            raise ValueError(msg)
+        self.context_behavior = context_behavior
 
     def on_template_loaded(self, ctx: Any) -> str | None:
         """Take Django syntax out of the dynamic attributes in a component's own
