@@ -369,15 +369,26 @@ class CitryDjangoExtension(Extension):
     Citry content, are decided from the template itself. The one thing worth
     passing is ``tokenizer``, when something other than Django compiles your
     templates.
+
+    ``django_attrs=True`` additionally allows Django syntax inside a dynamic
+    attribute (``c-bind="{{ self.icon.kwargs }}"``, ``c-url="{% url 'x' %}"``).
+    Off by default: Citry rejects that outright, so a template written this way
+    renders only through this package. See ``django_attrs``.
     """
 
     name = "citry_django"
 
-    def __init__(self, *, tokenizer: Callable[[str], list[Any]] | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        tokenizer: Callable[[str], list[Any]] | None = None,
+        django_attrs: bool = False,
+    ) -> None:
         # Every claim about where Django's syntax starts and stops is read with
         # this. Django's own lexer unless the template stack compiles templates
         # with something else, in which case the two have to agree.
         self.tokenizer = tokenizer or _django_lexer
+        self.django_attrs = django_attrs
 
     def on_template_loaded(self, ctx: Any) -> str | None:
         """Take Django syntax out of the dynamic attributes in a component's own

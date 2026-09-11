@@ -24,6 +24,28 @@ def django_attrs(citry_app):
         extension.django_attrs = False
 
 
+class TestOption:
+    """The flag itself. The fixtures below set it on a live instance, which
+    would keep passing if the constructor never accepted it."""
+
+    def test_the_extension_takes_it(self):
+        from citry_django import CitryDjangoExtension
+
+        assert CitryDjangoExtension(django_attrs=True).django_attrs is True
+
+    def test_it_is_off_unless_asked_for(self):
+        from citry_django import CitryDjangoExtension
+
+        assert CitryDjangoExtension().django_attrs is False
+
+    def test_it_sits_beside_the_tokenizer(self):
+        from citry_django import CitryDjangoExtension
+
+        extension = CitryDjangoExtension(tokenizer=len, django_attrs=True)
+        assert extension.tokenizer is len
+        assert extension.django_attrs is True
+
+
 class TestRewrite:
     """The source transform, which is where the two routes are chosen."""
 
