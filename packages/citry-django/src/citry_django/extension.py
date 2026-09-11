@@ -44,9 +44,10 @@ from django.template.utils import InvalidTemplateEngineError
 from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
+from .django_attrs import rewrite_attrs
 from .expressions import is_django_expression
 from .nodes import CitryParser, CitrySegment
-from .registry import get_tokenizer
+from .registry import django_attrs_enabled, get_tokenizer
 
 _SEGMENT_MARKER_LABEL = "CiTrY-SeGmEnT"
 
@@ -377,6 +378,18 @@ class CitryDjangoExtension(Extension):
         # this. Django's own lexer unless the template stack compiles templates
         # with something else, in which case the two have to agree.
         self.tokenizer = tokenizer or _django_lexer
+
+    def on_template_loaded(self, ctx: Any) -> str | None:
+        """Take Django syntax out of the dynamic attributes in a component's own
+        template, before Citry's parser reaches them.
+
+        The other half of this lives in ``rewrite_source``, which does the same
+        for a Django template that hosts a Citry region.
+        """
+        if not django_attrs_enabled():
+            return None
+        rewritten = rewrite_attrs(ctx.content)
+        return rewritten if rewritten != ctx.content else None
 
     def on_template_foreign_spans(self, ctx: Any) -> ForeignSpanSet | None:
         """

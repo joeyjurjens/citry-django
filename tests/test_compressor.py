@@ -323,6 +323,40 @@ class TestNeedsPrecompilation:
         assert _needs_precompilation(style, DEFAULT_FILE_TYPES) is False
 
 
+class TestTypeFromSuffix:
+    """A file whose suffix says what compiles it needs no ``type`` of its own.
+
+    The extension already recognises `.scss` by its URL when deciding what to
+    compress; writing the type into the content it hands django-compressor is
+    the other half of that, and without it the file arrives as source.
+    """
+
+    def test_a_scss_url_gets_its_type_written_out(self):
+        from citry.ext.dependencies import Style
+
+        from citry_django_compressor import _build_compressor_content
+
+        content = _build_compressor_content([Style(url="/static/a.scss")], "css")
+        assert 'type="text/x-scss"' in content
+
+    def test_a_plain_css_url_gets_none(self):
+        from citry.ext.dependencies import Style
+
+        from citry_django_compressor import _build_compressor_content
+
+        content = _build_compressor_content([Style(url="/static/a.css")], "css")
+        assert "type=" not in content
+
+    def test_a_declared_type_is_left_alone(self):
+        from citry.ext.dependencies import Style
+
+        from citry_django_compressor import _build_compressor_content
+
+        style = Style(url="/static/a.scss", attrs={"type": "text/plain"})
+        content = _build_compressor_content([style], "css")
+        assert 'type="text/plain"' in content
+
+
 class TestBuildCompressorContent:
     """Tests for building HTML content for django-compressor."""
 

@@ -15,7 +15,8 @@ from __future__ import annotations
 from citry_core.template_parser import TemplateElement, parse_template
 from django.template.base import TokenType
 
-from .registry import get_tokenizer
+from .django_attrs import rewrite_attrs
+from .registry import django_attrs_enabled, get_tokenizer
 
 
 def load_tags(source: str) -> str:
@@ -44,6 +45,13 @@ def rewrite_source(source: str, *, origin: str = "<django template>") -> str:
     """
     if "<c-" not in source:
         return source
+
+    # Before anything else: region discovery runs on the *masked* source, where
+    # a `{{ }}` is already blanked, and Citry rejects the empty attribute that
+    # leaves behind. Rewriting first also keeps every offset below consistent,
+    # since they are all computed on the string this returns a view of.
+    if django_attrs_enabled():
+        source = rewrite_attrs(source)
 
     regions = _citry_regions(_mask_django(source), source)
     if not regions:

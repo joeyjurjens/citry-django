@@ -41,6 +41,23 @@ def get_tokenizer() -> Any:
     return get_citry_app().extensions.get_extension("citry_django").tokenizer
 
 
+def django_attrs_enabled() -> bool:
+    """Whether the adapter may take Django syntax out of a ``c-`` attribute.
+
+    Publishes the lookup those rewrites call, too. Not done when the extension
+    is created: ``Citry(extensions=[...], template_globals={...})`` assigns the
+    globals afterwards, which would drop it.
+    """
+    app = get_citry_app()
+    extension = app.extensions.get_extension("citry_django")
+    if not getattr(extension, "django_attrs", False):
+        return False
+    from .django_attrs import LOOKUP_GLOBAL, django_lookup
+
+    app.template_globals.setdefault(LOOKUP_GLOBAL, django_lookup)
+    return True
+
+
 def import_object(path: str, setting: str) -> Any:
     module_path, _, attr = path.partition(":")
     if not attr:

@@ -57,6 +57,19 @@ def is_django_expression(expression: str, engine, extra_libraries: tuple[str, ..
     return True
 
 
+def is_dotted_path(expression: str) -> bool:
+    """Whether `expression` is only names joined by dots, e.g. ``a.b.c``.
+
+    The string form of :func:`_is_dotted_path`, for callers holding source
+    rather than a parsed node.
+    """
+    try:
+        parsed = ast.parse(expression.strip(), mode="eval")
+    except SyntaxError:
+        return False
+    return _is_dotted_path(parsed.body)
+
+
 def _is_dotted_path(node: ast.AST) -> bool:
     """
     Whether the expression is only names joined by dots, e.g. ``a.b.c``.

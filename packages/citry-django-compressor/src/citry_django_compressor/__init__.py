@@ -74,6 +74,16 @@ def _get_mimetype_from_url(url: str, file_types: dict[str, str]) -> str | None:
     return None
 
 
+def _type_for(dep: Script | Style, file_types: dict[str, str]) -> str:
+    """The dependency's own ``type``, or the one its URL suffix implies."""
+    declared = dep.attrs.get("type")
+    if isinstance(declared, str) and declared:
+        return declared
+    if dep.url:
+        return _get_mimetype_from_url(dep.url, file_types) or ""
+    return ""
+
+
 def _needs_precompilation(dep: Script | Style, file_types: dict[str, str]) -> bool:
     """Check if a dependency needs precompilation."""
     type_attr = dep.attrs.get("type")
@@ -86,31 +96,41 @@ def _needs_precompilation(dep: Script | Style, file_types: dict[str, str]) -> bo
     return False
 
 
-def _build_compressor_content(deps: list[Script | Style], kind: str) -> str:
-    """Build HTML content string for django-compressor."""
+def _build_compressor_content(
+    deps: list[Script | Style], kind: str, file_types: dict[str, str] | None = None
+) -> str:
+    """Build HTML content string for django-compressor.
+
+    A dependency that names no ``type`` gets the one its suffix implies.
+    django-compressor keys its precompilers on that attribute, so a `.scss`
+    without it would be concatenated as source; the caller should not have to
+    repeat what the extension already knows from the file name.
+    """
+    if file_types is None:
+        file_types = DEFAULT_FILE_TYPES
     parts = []
     for dep in deps:
         if kind == "css":
             if dep.url:
                 attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = dep.attrs.get("type", "")
+                type_attr = _type_for(dep, file_types)
                 type_str = f' type="{type_attr}"' if type_attr else ""
                 parts.append(f'<link rel="stylesheet" href="{dep.url}"{type_str}{attrs_str}/>')
             else:
                 attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = dep.attrs.get("type", "")
+                type_attr = _type_for(dep, file_types)
                 type_str = f' type="{type_attr}"' if type_attr else ""
                 attrs_prefix = f" {attrs_str}" if attrs_str else ""
                 parts.append(f"<style{type_str}{attrs_prefix}>{dep.content}</style>")
         else:  # js
             if dep.url:
                 attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = dep.attrs.get("type", "")
+                type_attr = _type_for(dep, file_types)
                 type_str = f' type="{type_attr}"' if type_attr else ""
                 parts.append(f'<script src="{dep.url}"{type_str}{attrs_str}></script>')
             else:
                 attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = dep.attrs.get("type", "")
+                type_attr = _type_for(dep, file_types)
                 type_str = f' type="{type_attr}"' if type_attr else ""
                 attrs_prefix = f" {attrs_str}" if attrs_str else ""
                 parts.append(f"<script{type_str}{attrs_prefix}>{dep.content}</script>")
@@ -245,7 +265,7 @@ class CitryCompressorExtension(Extension):
 
     def _compress_css(self, deps: list[Style]) -> list[Style]:
         """Compress CSS dependencies and return new Style objects with URLs."""
-        content = _build_compressor_content(deps, "css")
+        content = _build_compressor_content(deps, "css", self._get_file_types())
         if not content.strip():
             return []
 
@@ -262,7 +282,7 @@ class CitryCompressorExtension(Extension):
 
     def _compress_js(self, deps: list[Script]) -> list[Script]:
         """Compress JS dependencies and return new Script objects with URLs."""
-        content = _build_compressor_content(deps, "js")
+        content = _build_compressor_content(deps, "js", self._get_file_types())
         if not content.strip():
             return []
 

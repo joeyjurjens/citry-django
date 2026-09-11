@@ -15,9 +15,12 @@ your existing Django templates -- point ``settings.TEMPLATES`` at
 ``citry_django.backend.CitryTemplates`` and set ``CITRY_APP``.
 """
 
+from .assets import scripts, styles
 from .extension import CitryDjangoExtension, ForeignNode
 
 __all__ = [
     "CitryDjangoExtension",
     "ForeignNode",
+    "scripts",
+    "styles",
 ]

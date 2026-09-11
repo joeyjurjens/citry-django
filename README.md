@@ -77,6 +77,29 @@ django-components compiles templates with its own tokenizer, which reads a `%}`
 inside a quoted argument where Django's lexer ends the tag. Handing the tokenizer
 to the extension ensures both halves agree on where that tag ends.
 
+### Optional: Django syntax in a dynamic attribute
+
+Citry reads `c-x="..."` as a Python expression, so `{{ }}` and `{% %}` are a parse error there. A project moving templates over from Django meets the same two shapes constantly, and `django_attrs` lets both through:
+
+```python
+app = Citry(extensions=[CitryDjangoExtension(django_attrs=True)])
+```
+
+```html
+<c-icon c-bind="{{ self.icon.kwargs }}" />
+<c-link c-url="{% url 'basket:summary' %}" />
+```
+
+The two take different routes, because they differ in what they produce.
+
+A value that is exactly one `{{ dotted.path }}` is resolved by Django's own `Variable`, so the rules are Django's and stay Django's: key, then attribute, then index, calling what it finds unless it is marked `do_not_call_in_templates` or `alters_data`. The component receives **the object** - an image, a dict, a model - not a rendering of one. That is what makes it worth having: `{{ product.primary_image.original }}` reaches the component as the image, where Python's `product.primary_image.original` would not resolve the key and `{{ }}` in text would hand over a string.
+
+Anything else - a tag, a filter, text around the interpolation - produces a string whatever you do, and Citry already has a place for that. The `c-` prefix is dropped, making it an ordinary attribute, and this package renders it through Django as it always has.
+
+A `{{ name }}` with no dots is left alone: both engines resolve one identically, so Citry keeps it and keeps its strictness about unknown names.
+
+Off by default, and worth knowing why: Citry rejects foreign source in an expression attribute outright (`FOREIGN_SPAN_UNSUPPORTED_POSITION`), so a template written this way renders only through citry-django. The transform happens in the source before Citry's parser sees it, which also means a Python error inside a rewritten attribute reports against the rewritten expression rather than the one you wrote.
+
 ### Optional: django-compressor
 
 citry-django ships optional packages to integrate with popular Django libraries.
@@ -92,20 +115,27 @@ from citry_django_compressor import CitryCompressorExtension
 app = Citry(extensions=[CitryDjangoExtension(), CitryCompressorExtension()])
 ```
 
-Components can mark assets for precompilation using the `Dependencies` class:
+A component declares its assets with the `Dependencies` class. `styles()` and `scripts()` turn the static paths a project already writes into what Citry collects:
 
 ```python
-from django.templatetags.static import static
-from citry.ext.dependencies import Style
+from citry_django import scripts, styles
 
 
 class MyComponent(Component):
     class Dependencies:
-        css = [Style(url=static("component.scss"), attrs={"type": "text/x-scss"})]
+        css = styles(["component/component.scss"])
+        js = scripts(["component/component.js"])
 ```
 
-Django-compressor will find the file via staticfiles, precompile it, and output
-a compressed URL.
+Django-compressor finds each file through staticfiles, precompiles what needs it, and emits one compressed URL. A `.scss` needs no `type` of its own: the extension already recognises the suffix when deciding what to compress, and writes the type django-compressor keys its precompilers on. Declare one yourself to override that, and extend the mapping with `CITRY_COMPRESSOR_FILE_TYPES`.
+
+`styles()` and `scripts()` accept a path or a list of them, and take extra attributes as keywords, so a project can keep its paths in constants:
+
+```python
+css = styles(Css.CARD, Css.GRID, media="screen")
+```
+
+They live in `citry_django` and know nothing about compression; without the compressor extension they are simply static URLs.
 
 ## Getting started
 
