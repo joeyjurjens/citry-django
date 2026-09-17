@@ -415,8 +415,10 @@ class TestPageWideBundle:
 
         html = render_django("<head><c-css /></head><body><c-shared-x /><c-shared-y /></body>")
 
+        # The nested selector, because the outer one is a substring of it and
+        # so counts twice per copy.
         assert len(link_tags(html)) == 1
-        assert bundle_body(html).count(".scss-file-test") == 1
+        assert bundle_body(html).count("scss-file-test.nested") == 1
 
 
 class TestWhatIsBundled:
