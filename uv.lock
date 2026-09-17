@@ -313,7 +313,7 @@ wheels = [
 
 [[package]]
 name = "citry-django"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/citry-django" }
 dependencies = [
     { name = "citry" },
@@ -340,7 +340,7 @@ provides-extras = ["django-components", "compressor"]
 
 [[package]]
 name = "citry-django-compressor"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/citry-django-compressor" }
 dependencies = [
     { name = "citry-django" },
@@ -355,7 +355,7 @@ requires-dist = [
 
 [[package]]
 name = "citry-django-djc"
-version = "0.2.2"
+version = "0.3.0"
 source = { editable = "packages/citry-django-djc" }
 dependencies = [
     { name = "citry-django" },
