@@ -3,12 +3,12 @@ from __future__ import annotations
 import re
 from contextvars import ContextVar
 from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 from citry.assets import dedupe
 from django.conf import settings
 
+from .compat import StrEnum
 from .registry import get_citry_app
 
 current_page: ContextVar[PageAssets | None] = ContextVar("citry_django_page", default=None)

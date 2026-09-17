@@ -450,6 +450,49 @@ with the whole response's tags, and what it returns is what gets placed.
 
 [citry-django-compressor]: packages/citry-django-compressor
 
+### Citry's own routes
+
+Citry serves its client runtime itself. Mount it, or it has nowhere to point a
+`src` at and inlines the whole bundle into every page, on every request:
+
+```python
+# urls.py
+from citry_django.urls import urlpatterns as citry_urls
+
+urlpatterns = [
+    *citry_urls(app, "/citry"),
+    ...
+]
+```
+
+That wraps Citry's own Django routes and prepares each response the way a web
+server prepares a file, because these are not files a web server serves: they
+come from a view, so an nginx rule naming a static directory never reaches
+them. Each response gets gzip for a client that asks, an `ETag`, and
+`Cache-Control: public, max-age=31536000, immutable`. Only the routes that are
+files: Citry mounts its event endpoints beside them, and those answer per
+request.
+
+Forever is safe because the mount carries a release segment:
+
+```
+/citry/a1b2c3d4/citry.js
+```
+
+`Citry.build_url` is the prefix plus the route's path, so a segment in the
+prefix is in every URL Citry builds. Citry names its own routes, and
+`citry.js` is `citry.js` at every version, so without this a browser told to
+keep one forever would keep the wrong one after an upgrade. The segment is
+derived from the installed Citry version and from
+[`CITRY_MINIFY_ASSETS`](#citry_minify_assets), which are the two things that
+change the bytes.
+
+That is also why there is no setting for how long: the URL says which bytes it
+serves, so the answer is always forever.
+
+Those files ship unminified and staticfiles cannot see them, so this mount is
+the only place able to shrink them.
+
 ## Settings
 
 One is required; the rest have a working default and exist for a project that
@@ -461,7 +504,6 @@ needs to say otherwise.
 | [`CITRY_DEPS_STRATEGY`](#citry_deps_strategy) | `"document"` |
 | [`CITRY_COLLECT_PAGE_ASSETS`](#citry_collect_page_assets) | `True` |
 | [`CITRY_MINIFY_ASSETS`](#citry_minify_assets) | `False` |
-| [`CITRY_ASSET_MAX_AGE`](#citry_asset_max_age) | `3600` |
 | [`CITRY_COMPRESSOR_FILE_TYPES`](#citry_compressor_file_types) | `{}` |
 
 #### `CITRY_APP`
@@ -496,15 +538,11 @@ does the collecting.
 #### `CITRY_MINIFY_ASSETS`
 
 Whether Citry's own runtime is minified on its way out of
-`citry_django.urls`. Citry ships it unminified and staticfiles cannot see it,
-so this is the only place able to shrink it. Needs django-compressor, and is
-off because it costs build time on every cold cache.
-
-#### `CITRY_ASSET_MAX_AGE`
-
-How long a browser may keep one of Citry's own files, in seconds. Those URLs
-carry no content hash, so this is a revalidation window rather than a promise:
-the response also carries an `ETag`, which turns a stale hit into a 304.
+[the mount](#citrys-own-routes). Citry ships it unminified and staticfiles
+cannot see it, so this is the only place able to shrink it. Needs
+django-compressor, and is off because it costs the minifier's time on every
+cold cache. Turning it on changes the release segment, so browsers pick the
+new file up on their own.
 
 #### `CITRY_COMPRESSOR_FILE_TYPES`
 

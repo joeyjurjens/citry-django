@@ -3,7 +3,7 @@ from citry import Citry, Component
 from django.test import RequestFactory
 
 from citry_django import CitryDjangoExtension
-from citry_django.urls import urlpatterns
+from citry_django.urls import release, urlpatterns
 
 
 @pytest.fixture
@@ -14,8 +14,13 @@ def mounted():
 
 
 def runtime_view(patterns):
-    """The pattern serving the client runtime."""
-    return next(p for p in patterns if "citry.js" in str(p.pattern))
+    """The pattern serving the client runtime.
+
+    One level down: the mount wraps its routes in a release segment, so that
+    every URL Citry builds carries it.
+    """
+    nested = patterns[0].url_patterns
+    return next(p for p in nested if "citry.js" in str(p.pattern))
 
 
 class TestMounting:
@@ -23,7 +28,28 @@ class TestMounting:
         """Without it Citry has nowhere to point a `src` at, so it inlines the
         whole bundle into every page instead."""
         app, _ = mounted
-        assert app.mounted_prefix == "/citry"
+        assert app.mounted_prefix.startswith("/citry/")
+
+    def test_the_prefix_carries_a_release_segment(self, mounted):
+        """`Citry.build_url` is the prefix and the route's path, so a segment
+        here is in every URL Citry builds.
+
+        Citry names its own routes: `citry.js` is `citry.js` at every version.
+        Told to keep one forever, a browser would keep the wrong one after an
+        upgrade; under a new segment it is a different file instead.
+        """
+        app, _ = mounted
+        segment = app.mounted_prefix.removeprefix("/citry/")
+
+        assert segment and "/" not in segment
+        assert segment == release()
+
+    def test_minifying_changes_the_release(self, settings):
+        """It changes the bytes at the same route, so it has to change the URL."""
+        plain = release()
+        settings.CITRY_MINIFY_ASSETS = True
+
+        assert release() != plain
 
     def test_the_runtime_is_served_as_a_file(self, mounted):
         app, _ = mounted
@@ -33,21 +59,45 @@ class TestMounting:
             template = '<div x-data="{}">x</div>'
 
         app.register(Widget, "mounted-widget")
-        assert "/citry/citry.js" in str(Widget())
+        assert f"/citry/{release()}/citry.js" in str(Widget())
 
 
 class TestServing:
-    def test_the_response_revalidates(self, mounted):
+    def test_the_response_is_kept_forever(self, mounted):
+        """It can be: other bytes arrive under another release segment."""
         _, patterns = mounted
         response = runtime_view(patterns).callback(RequestFactory().get("/citry/citry.js"))
-        assert response["Cache-Control"] == "public, max-age=3600"
+
+        assert response["Cache-Control"] == "public, max-age=31536000, immutable"
         assert response["ETag"]
 
-    def test_the_window_is_a_setting(self, mounted, settings):
-        settings.CITRY_ASSET_MAX_AGE = 60
+    def test_an_endpoint_is_left_alone(self, mounted):
+        """Citry mounts its event endpoints beside the files.
+
+        Those answer per request, in JSON. Telling a browser to keep one for a
+        year would break every interactive component on the page.
+        """
         _, patterns = mounted
-        response = runtime_view(patterns).callback(RequestFactory().get("/citry/citry.js"))
-        assert response["Cache-Control"] == "public, max-age=60"
+        events = next(
+            p for p in patterns[0].url_patterns if str(p.pattern).endswith("ext/events/call")
+        )
+        response = events.callback(RequestFactory().post("/citry/ext/events/call"))
+
+        assert "Cache-Control" not in response
+
+    def test_a_body_is_gzipped_once(self, mounted):
+        """Around 10 ms for the 400 kB runtime, worth paying on the first
+        request and not on every one."""
+        from citry_django.urls import packed
+
+        _, patterns = mounted
+        request = RequestFactory().get("/citry/citry.js", HTTP_ACCEPT_ENCODING="gzip")
+        view = runtime_view(patterns).callback
+        first = view(request).content
+        keys = dict(packed)
+
+        assert view(request).content == first
+        assert dict(packed) == keys
 
     def test_minification_is_off_by_default(self, mounted):
         _, patterns = mounted
