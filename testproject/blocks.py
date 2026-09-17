@@ -1,10 +1,3 @@
-"""
-StreamField blocks for the demo site.
-
-An accordion is a good shape to test against: it nests a ListBlock of
-StructBlocks, and each item holds a StreamBlock with several child types.
-"""
-
 import uuid
 
 from wagtail import blocks

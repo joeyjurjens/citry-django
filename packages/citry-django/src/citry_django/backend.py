@@ -1,31 +1,14 @@
-"""
-A Django template backend that understands Citry element syntax.
-
-Swap ``BACKEND`` in ``settings.TEMPLATES`` and ``<c-hero/>`` works in every
-Django template::
-
-    TEMPLATES = [{
-        "BACKEND": "citry_django.backend.CitryTemplates",
-        "DIRS": [...],
-        "APP_DIRS": True,
-        "OPTIONS": {"context_processors": [...]},
-    }]
-
-This is still Django's own engine: same lexer, same tags, same inheritance. The
-only difference is that source is rewritten as it is read, so ``<c-component/>``
-becomes a tag Django can compile. A template with no Citry syntax in it is
-returned unchanged.
-"""
-
 from __future__ import annotations
 
 from typing import Any
 
-from django.template.backends.django import DjangoTemplates
+from django.template.backends.django import DjangoTemplates, Template
+from django.utils.safestring import mark_safe
 
+from .page import PageAssets, collected
 from .rewrite import rewrite_source
 
-_TAGS = "citry_django.templatetags.citry"
+TAGS_MODULE = "citry_django.templatetags.citry"
 
 
 class _RewriteMixin:
@@ -35,7 +18,7 @@ class _RewriteMixin:
         return rewrite_source(super().get_contents(origin), origin=origin.name)
 
 
-def _enable_rewriting(loaders: Any) -> None:
+def enable_rewriting(loaders: Any) -> None:
     """
     Teach every configured loader to rewrite, whoever wrote it.
 
@@ -48,13 +31,32 @@ def _enable_rewriting(loaders: Any) -> None:
     for loader in loaders:
         nested = getattr(loader, "loaders", None)
         if nested:
-            _enable_rewriting(nested)
+            enable_rewriting(nested)
         elif not isinstance(loader, _RewriteMixin):
             cls = type(loader)
             loader.__class__ = type(f"Rewriting{cls.__name__}", (_RewriteMixin, cls), {})
 
 
 class CitryTemplates(DjangoTemplates):
+    """
+    A Django template backend that understands Citry element syntax.
+
+    Swap ``BACKEND`` in ``settings.TEMPLATES`` and ``<c-hero/>`` works in every
+    Django template::
+
+        TEMPLATES = [{
+            "BACKEND": "citry_django.backend.CitryTemplates",
+            "DIRS": [...],
+            "APP_DIRS": True,
+            "OPTIONS": {"context_processors": [...]},
+        }]
+
+    This is still Django's own engine: same lexer, same tags, same inheritance. The
+    only difference is that source is rewritten as it is read, so ``<c-component/>``
+    becomes a tag Django can compile. A template with no Citry syntax in it is
+    returned unchanged.
+    """
+
     def __init__(self, params: dict) -> None:
         params = params.copy()
         options = params.setdefault("OPTIONS", {}).copy()
@@ -63,13 +65,36 @@ class CitryTemplates(DjangoTemplates):
         # The rewriter injects its tag into templates that have no `{% load %}`
         # line of their own, so it has to resolve as a builtin.
         builtins = list(options.get("builtins", []))
-        if _TAGS not in builtins:
-            builtins.append(_TAGS)
+        if TAGS_MODULE not in builtins:
+            builtins.append(TAGS_MODULE)
         options["builtins"] = builtins
 
         super().__init__(params)
-        _enable_rewriting(self.engine.template_loaders)
+        enable_rewriting(self.engine.template_loaders)
 
     def from_string(self, template_code: str) -> Any:
         # `from_string` never reaches a loader, so it rewrites here as well.
-        return super().from_string(rewrite_source(template_code, origin="<string template>"))
+        source = rewrite_source(template_code, origin="<string template>")
+        return PageTemplate(super().from_string(source).template, self)
+
+    def get_template(self, template_name: str) -> Any:
+        return PageTemplate(super().get_template(template_name).template, self)
+
+
+class PageTemplate(Template):
+    """One page render, and the assets its Citry regions placed.
+
+    A region keeps its own assets and says where they are, so its HTML stands
+    on its own; the page reads those spots once the whole template is rendered.
+    Where the tags end up is the host template's business: `<c-css />` and
+    `<c-js />` name the spot, and without them they stay where Citry put them.
+    """
+
+    def render(self, context: Any = None, request: Any = None) -> str:
+        page = PageAssets.open()
+        try:
+            html = super().render(context, request)
+        finally:
+            if page is not None:
+                page.close()
+        return mark_safe(collected(html, page))

@@ -1,5 +1,3 @@
-"""Serialization behavior where Django selects structured Citry renders."""
-
 from __future__ import annotations
 
 import json
@@ -10,10 +8,10 @@ from citry import Citry, Component, Extension
 from django.template import engines
 
 from citry_django import CitryDjangoExtension
-from citry_django.registry import get_citry_app
+from citry_django.registry import citry_app_source
 
 
-def _json_script(html: str, attribute: str) -> dict:
+def json_script(html: str, attribute: str) -> dict:
     match = re.search(rf"<script[^>]*{attribute}[^>]*>(.*?)</script>", html, re.S)
     assert match is not None, f"no {attribute} script in output"
     return json.loads(match.group(1))
@@ -66,8 +64,8 @@ def test_django_loop_preserves_client_graph_and_serializes_once() -> None:
         """
 
     html = str(Page(values=["a", "b"]))
-    graph = _json_script(html, "data-citry-graph")
-    events = _json_script(html, "data-citry-events")
+    graph = json_script(html, "data-citry-graph")
+    events = json_script(html, "data-citry-events")
 
     assert counter.calls == ["document"]
     assert html.count('class="boundary-widget"') == 2
@@ -136,7 +134,6 @@ def test_host_nonce_reaches_strict_citry_serialization(
 ) -> None:
     # The nonce is applied while Citry serializes its dependencies, so this is
     # one of the tests that needs Citry emitting them.
-    settings.CITRY_DEPS_STRATEGY = "document"
     import testproject.citry_app as app_module
 
     app = Citry(
@@ -152,7 +149,7 @@ def test_host_nonce_reaches_strict_citry_serialization(
     app.register(Interactive, "serialization-csp-widget")
     monkeypatch.setattr(app_module, "serialization_csp_app", app, raising=False)
     settings.CITRY_APP = "testproject.citry_app:serialization_csp_app"
-    get_citry_app.cache_clear()
+    citry_app_source.cache_clear()
     context = {}
     request = None
     if nonce_source == "request":
@@ -170,13 +167,13 @@ def test_host_nonce_reaches_strict_citry_serialization(
             )
         )
     finally:
-        get_citry_app.cache_clear()
+        citry_app_source.cache_clear()
 
     assert 'nonce="requestNonce"' in html
     assert 'src="/citry/ext/events/runtime-csp.js"' in html
 
 
-def _locmem(settings) -> None:
+def locmem(settings) -> None:
     from django.core.cache import cache
 
     settings.CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache"}}
@@ -193,7 +190,7 @@ def test_a_cached_body_replayed_later_fails_loudly(settings) -> None:
     see it, because this render reached no markers at all. Without this guard
     the raw comment goes to the browser.
     """
-    _locmem(settings)
+    locmem(settings)
     app = Citry(extensions=[CitryDjangoExtension()])
 
     class Widget(Component):
@@ -211,17 +208,19 @@ def test_a_cached_body_replayed_later_fails_loudly(settings) -> None:
         str(Page())
 
 
-def test_a_cached_region_in_a_django_template_replays_fine(settings) -> None:
+def test_a_cached_region_in_a_django_template_replays(settings) -> None:
     """
-    The other direction has no such problem, and stays supported.
+    A region in a Django template is finished markup, so a host may store it.
 
-    A `<c-*>` region in a Django template renders to finished HTML before
-    `{% cache %}` ever sees it, so the cache holds real markup.
+    `{% cache %}` around a region keeps what the region rendered, assets and
+    all, and a later hit serves it without rendering anything. Nothing in the
+    markup refers back to the page that produced it, which is what makes the
+    replay sound -- and hosts do this well beyond `{% cache %}`: a rendered
+    base template kept in a module-level dict is the same thing by hand.
     """
-    _locmem(settings)
+    locmem(settings)
     source = "{% load cache %}{% cache 300 region %}<c-swatch label='cached'/>{% endcache %}"
-    first = engines["citry"].from_string(source).render({})
-    second = engines["citry"].from_string(source).render({})
 
+    first = engines["citry"].from_string(source).render({})
     assert 'class="swatch"' in first
-    assert second == first
+    assert engines["citry"].from_string(source).render({}) == first

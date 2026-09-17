@@ -1,17 +1,3 @@
-"""
-Awkward input, and the boundary between the adapter's limits and Django's own.
-
-Two cases deserve their names spelled out, because both look like ordinary tags
-and are not:
-
-* ``{% comment %}`` is consumed with ``skip_past()`` rather than ``parse()``, so
-  a span recorder that only follows ``parse()`` never sees it and hands Django
-  two unrelated tags.
-* ``{% verbatim %}`` is handled by Django's *lexer*, not by a tag. Its body is
-  never interpreted, which means Citry must not interpret it either, however
-  much it looks like Citry content.
-"""
-
 import threading
 
 import pytest

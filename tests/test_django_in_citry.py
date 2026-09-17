@@ -1,13 +1,3 @@
-"""
-Django's syntax inside a Citry component template.
-
-Every ``{% ... %}`` is run by Django's real engine, so a tag library the adapter
-has never heard of works the way it would in a Django template. The libraries
-used here are real, installed packages -- django-bootstrap5, django-crispy-forms,
-sorl-thumbnail, django.contrib.humanize -- picked for tag shapes that are
-awkward to support. Nothing in the adapter names any of them.
-"""
-
 import pytest
 from citry import Component
 from django import forms
@@ -19,7 +9,7 @@ class Contact(forms.Form):
 
 
 @pytest.fixture(autouse=True)
-def _fixtures(component):
+def fixtures(component):
     component('<b class="alert">{{ msg }}</b>', name="alert")
     component('<span class="chip">{{ label }}</span>', name="chip")
 

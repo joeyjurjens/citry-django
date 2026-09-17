@@ -1,14 +1,3 @@
-"""
-What a component can read by name, inside a Citry region.
-
-Django draws a line that this follows: a context processor is ambient - every
-template Django renders has `user` and `LANGUAGE_CODE`, whatever called it - and
-a view's own context is not, it belongs to the template it was rendered for.
-
-So processors and the request reach a component's own template at any depth,
-and the host's variables scope to the region they were written in.
-"""
-
 import pytest
 
 

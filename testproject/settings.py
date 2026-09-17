@@ -1,12 +1,3 @@
-"""
-Settings for the project the test suite runs against.
-
-Everything is switched on at once on purpose. The point of this project is to
-be a realistic host: Wagtail, an asset pipeline (django-compressor),
-third-party tag libraries with awkward shapes, and Citry components, all in one
-template tree. A change that breaks any of them breaks a test.
-"""
-
 from pathlib import Path
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -163,4 +154,3 @@ CITRY_APP = "testproject.citry_app:app"
 # The component library ships a whole design system, so emitting it on every
 # render would bury each test's output. Tests about assets opt back into
 # "document" and assert on what reaches the page.
-CITRY_DEPS_STRATEGY = "ignore"

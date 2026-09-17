@@ -1,10 +1,3 @@
-"""
-Static paths as Citry dependencies.
-
-A project writes the paths it already writes; these turn them into the objects
-Citry collects, with the ``type`` that tells django-compressor what to compile.
-"""
-
 from citry_django import scripts, styles
 
 

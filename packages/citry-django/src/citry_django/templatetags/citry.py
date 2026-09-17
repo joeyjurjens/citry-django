@@ -1,11 +1,3 @@
-"""
-The tag the region marker compiles to.
-
-Registered as a Django builtin by :mod:`citry_django.backend`, because the
-rewriter injects it into templates that have no ``{% load %}`` line of their
-own. It is generated, never written by hand.
-"""
-
 from __future__ import annotations
 
 from django import template
@@ -17,6 +9,13 @@ register = template.Library()
 
 @register.tag("citryfragment")
 def citryfragment(parser: template.base.Parser, token: template.base.Token) -> CitryFragment:
+    """
+    The tag the region marker compiles to.
+
+    Registered as a Django builtin by :mod:`citry_django.backend`, because the
+    rewriter injects it into templates that have no ``{% load %}`` line of their
+    own. It is generated, never written by hand.
+    """
     bits = token.split_contents()
     if len(bits) != 3:
         msg = "{% citryfragment %} takes two arguments and is generated, not written by hand."

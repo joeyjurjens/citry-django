@@ -1,14 +1,3 @@
-"""
-Resolving the objects a project points the adapter at.
-
-Rendering a ``<c-*>`` region needs to know which engine to look components up
-in, and reading a template needs the tokenizer that engine's adapter was
-configured with. Point ``settings.CITRY_APP`` at your instance with a dotted
-path, optionally with a ``:attr`` suffix::
-
-    CITRY_APP = "myproject.citry_app:app"
-"""
-
 from __future__ import annotations
 
 from functools import cache
@@ -18,9 +7,12 @@ from typing import Any
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 
+from .context import ContextBehavior
+
 
 @cache
-def get_citry_app() -> Any:
+def citry_app_source() -> Any:
+    """What ``CITRY_APP`` names: an engine, or a callable that picks one."""
     path = getattr(settings, "CITRY_APP", None)
     if not path:
         msg = (
@@ -29,6 +21,36 @@ def get_citry_app() -> Any:
         )
         raise ImproperlyConfigured(msg)
     return import_object(path, "CITRY_APP")
+
+
+def get_citry_app() -> Any:
+    """
+    Resolving the objects a project points the adapter at.
+
+    Rendering a ``<c-*>`` region needs to know which engine to look components up
+    in, and reading a template needs the tokenizer that engine's adapter was
+    configured with. Point ``settings.CITRY_APP`` at your instance with a dotted
+    path, optionally with a ``:attr`` suffix::
+
+        CITRY_APP = "myproject.citry_app:app"
+
+    It may name a callable instead, for a project that renders more than one engine
+    and chooses between them per request::
+
+        CITRY_APP = "myproject.citry_app:engine_for_request"
+
+    The callable is resolved once and called on every lookup, so it has to be cheap:
+    build the engines at startup and have it select one. A ``Citry`` instance is not
+    callable, so the two forms tell themselves apart.
+
+    The engine this render belongs to.
+
+        Called once per ``<c-*>`` region and three more times per template, so the
+        import stays behind ``citry_app_source``'s cache and only the selection
+        runs each time.
+    """
+    source = citry_app_source()
+    return source() if callable(source) else source
 
 
 def get_tokenizer() -> Any:
@@ -44,24 +66,7 @@ def get_tokenizer() -> Any:
 def context_behavior() -> str:
     """How much of the host's context a component's own template may read."""
     extension = get_citry_app().extensions.get_extension("citry_django")
-    return getattr(extension, "context_behavior", "isolated")
-
-
-def django_attrs_enabled() -> bool:
-    """Whether the adapter may take Django syntax out of a ``c-`` attribute.
-
-    Publishes the lookup those rewrites call, too. Not done when the extension
-    is created: ``Citry(extensions=[...], template_globals={...})`` assigns the
-    globals afterwards, which would drop it.
-    """
-    app = get_citry_app()
-    extension = app.extensions.get_extension("citry_django")
-    if not getattr(extension, "django_attrs", False):
-        return False
-    from .django_attrs import LOOKUP_GLOBAL, django_lookup
-
-    app.template_globals.setdefault(LOOKUP_GLOBAL, django_lookup)
-    return True
+    return getattr(extension, "context_behavior", ContextBehavior.ISOLATED)
 
 
 def import_object(path: str, setting: str) -> Any:
@@ -85,3 +90,15 @@ def import_object(path: str, setting: str) -> Any:
             f"settings.{setting} points at {path!r}, but {module_path!r} has no attribute {attr!r}."
         )
         raise ImproperlyConfigured(msg) from exc
+
+
+def deps_strategy() -> str:
+    """How a region serializes what Citry collected for it.
+
+    Citry's own setting, named the same way: `"document"` emits the tags and
+    the client runtime, `"simple"` the tags alone, `"ignore"` nothing at all.
+    A project sets `"ignore"` when something downstream collects the assets
+    instead, and then a page loads without its component styles unless that
+    something does its job.
+    """
+    return getattr(settings, "CITRY_DEPS_STRATEGY", "document")

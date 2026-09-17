@@ -1,11 +1,3 @@
-"""
-Content for the demo site and for the end-to-end tests.
-
-Real content matters here: `{% image %}` needs an actual Image with a real file
-to generate a rendition from, and `{% pageurl %}` needs pages that are really in
-the tree.
-"""
-
 from __future__ import annotations
 
 import io
@@ -17,7 +9,7 @@ ARTICLES = [
 ]
 
 
-def _png(width: int = 800, height: int = 400) -> io.BytesIO:
+def png(width: int = 800, height: int = 400) -> io.BytesIO:
     """A minimal valid PNG, built without needing an asset on disk."""
     from PIL import Image
 
@@ -42,7 +34,7 @@ def seed() -> dict:
     image = Image.objects.filter(title="Hero").first()
     if image is None:
         image = Image(title="Hero")
-        image.file.save("hero.png", ImageFile(_png(), name="hero.png"), save=False)
+        image.file.save("hero.png", ImageFile(png(), name="hero.png"), save=False)
         image.save()
 
     home = HomePage(

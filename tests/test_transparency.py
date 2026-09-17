@@ -1,19 +1,3 @@
-"""
-A Django block must be *transparent* to Citry.
-
-The property asserted here is::
-
-    Rendering X inside a transparent Django construct produces the same Citry
-    output as rendering X on its own.
-
-"Transparent" means a construct that takes its branch and emits its body
-unchanged, adding no markup of its own. Asserting the property rather than the
-content is what makes this catch a whole class of loss: if any of Citry's
-serialize-time work -- `data-cid` identity markers, dependency collection,
-ownership -- goes missing on the way through the adapter, these fail, whatever
-the cause. A test that checks "the badge rendered" would not.
-"""
-
 import re
 
 import pytest
@@ -48,7 +32,7 @@ CID = re.compile(r"data-cid-[a-z0-9]+")
 
 
 @pytest.fixture(autouse=True)
-def _fixtures(component):
+def fixtures(component):
     component('<b class="leaf">{{ m }}</b>', name="leaf", css=".leaf{color:red}")
     component('<span class="inner"><c-leaf m="deep"/></span>', name="mid")
     component('<div class="slotted"><c-slot/></div>', name="slotted")

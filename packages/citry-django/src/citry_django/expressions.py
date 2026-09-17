@@ -1,22 +1,3 @@
-"""
-Deciding who owns a ``{{ ... }}`` inside a Citry template.
-
-Both engines spell interpolation the same way, so the decision is made per
-expression, at compile time:
-
-1. Not a valid Python expression -> Django (``{{ x|date:"Y-m-d" }}``).
-2. A plain dotted path -> Django, whose lookup is a superset of Python's
-   attribute access: dictionary, then attribute, then index. ``{{ d.key }}``
-   on a dict is why this matters.
-3. A filter chain whose filter names Django's live registry knows -> Django.
-4. Otherwise -> Citry.
-
-Rule 3 is the only genuine overlap: ``a|b`` is both a filter application and a
-bitwise or, resolved by asking the registry the template's own ``{% load %}``
-lines populate. A Python variable named after a registered filter is therefore
-read as the filter.
-"""
-
 from __future__ import annotations
 
 import ast
@@ -24,7 +5,26 @@ from functools import cache
 
 
 def is_django_expression(expression: str, engine, extra_libraries: tuple[str, ...] = ()) -> bool:
-    """Whether ``{{ expression }}`` should be handed to Django."""
+    """
+    Deciding who owns a ``{{ ... }}`` inside a Citry template.
+
+    Both engines spell interpolation the same way, so the decision is made per
+    expression, at compile time:
+
+    1. Not a valid Python expression -> Django (``{{ x|date:"Y-m-d" }}``).
+    2. A plain dotted path -> Django, whose lookup is a superset of Python's
+       attribute access: dictionary, then attribute, then index. ``{{ d.key }}``
+       on a dict is why this matters.
+    3. A filter chain whose filter names Django's live registry knows -> Django.
+    4. Otherwise -> Citry.
+
+    Rule 3 is the only genuine overlap: ``a|b`` is both a filter application and a
+    bitwise or, resolved by asking the registry the template's own ``{% load %}``
+    lines populate. A Python variable named after a registered filter is therefore
+    read as the filter.
+
+    Whether ``{{ expression }}`` should be handed to Django.
+    """
     text = expression.strip()
     if not text:
         return True
@@ -43,13 +43,13 @@ def is_django_expression(expression: str, engine, extra_libraries: tuple[str, ..
     # then index. `{{ d.key }}` on a dict is the case that matters -- Python
     # attribute access fails on it, Django resolves it, and every Django
     # template in existence writes it that way.
-    if _is_dotted_path(node):
+    if is_dotted_ast(node):
         return True
 
     if not (isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr)):
         return False
 
-    known = _filter_names(engine, extra_libraries)
+    known = filter_names(engine, extra_libraries)
     while isinstance(node, ast.BinOp) and isinstance(node.op, ast.BitOr):
         if not (isinstance(node.right, ast.Name) and node.right.id in known):
             return False
@@ -60,17 +60,17 @@ def is_django_expression(expression: str, engine, extra_libraries: tuple[str, ..
 def is_dotted_path(expression: str) -> bool:
     """Whether `expression` is only names joined by dots, e.g. ``a.b.c``.
 
-    The string form of :func:`_is_dotted_path`, for callers holding source
+    The string form of :func:`is_dotted_ast`, for callers holding source
     rather than a parsed node.
     """
     try:
         parsed = ast.parse(expression.strip(), mode="eval")
     except SyntaxError:
         return False
-    return _is_dotted_path(parsed.body)
+    return is_dotted_ast(parsed.body)
 
 
-def _is_dotted_path(node: ast.AST) -> bool:
+def is_dotted_ast(node: ast.AST) -> bool:
     """
     Whether the expression is only names joined by dots, e.g. ``a.b.c``.
 
@@ -87,7 +87,7 @@ def _is_dotted_path(node: ast.AST) -> bool:
 
 
 @cache
-def _filter_names(engine, extra_libraries: tuple[str, ...]) -> frozenset[str]:
+def filter_names(engine, extra_libraries: tuple[str, ...]) -> frozenset[str]:
     """Every filter name in scope: the engine's builtins plus loaded libraries."""
     names: set[str] = set()
     for library in engine.template_builtins:

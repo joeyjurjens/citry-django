@@ -1,16 +1,3 @@
-"""
-The project's Citry instance and its components.
-
-Components are built on `citry_ui`, Citry's own component library, the way a
-real site would: the library supplies cards, buttons and badges, and the
-components here compose them into the things this site is actually made of.
-
-Every Wagtail tag used below is resolved by *Django's* engine through the
-adapter. There is no Wagtail-specific code in the adapter: these work for the
-same reason they work in an ordinary Django template, which is that the
-component's own `{% load %}` line travels with the region.
-"""
-
 import citry_ui
 from citry import Citry, Component
 from citry.ext.dependencies import Style

@@ -12,6 +12,7 @@ members = [
     "citry-django",
     "citry-django-compressor",
     "citry-django-djc",
+    "citry-django-sekizai",
 ]
 
 [manifest.dependency-groups]
@@ -24,6 +25,7 @@ dev = [
     { name = "django-compressor", specifier = ">=4.4" },
     { name = "django-crispy-forms", specifier = ">=2.0" },
     { name = "django-libsass", specifier = ">=0.9" },
+    { name = "django-sekizai", specifier = ">=4.0" },
     { name = "django-widget-tweaks" },
     { name = "pillow" },
     { name = "pytest", specifier = ">=8.0" },
@@ -369,6 +371,21 @@ requires-dist = [
 ]
 
 [[package]]
+name = "citry-django-sekizai"
+version = "0.1.0"
+source = { editable = "packages/citry-django-sekizai" }
+dependencies = [
+    { name = "citry-django" },
+    { name = "django-sekizai" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "citry-django", editable = "packages/citry-django" },
+    { name = "django-sekizai", specifier = ">=4.0" },
+]
+
+[[package]]
 name = "citry-ui"
 version = "0.2.1"
 source = { registry = "https://pypi.org/simple" }
@@ -483,6 +500,19 @@ wheels = [
 ]
 
 [[package]]
+name = "django-classy-tags"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django", version = "5.2.17", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "django", version = "6.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/91/7f/18da9d8fcc469fc7aa74abc526aacaa3cc7180ad2208f80d43e8b670aed6/django-classy-tags-4.1.0.tar.gz", hash = "sha256:c8d9d1aa2fa6e71c4d866df4dd11d23a69b8d25bbb750b2490a17b161774ee59", size = 24692 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/6d/10/13afc12b7d9657ed67f8d49c1cf0585a4331b197ed98ea654e9ed8034e79/django_classy_tags-4.1.0-py3-none-any.whl", hash = "sha256:1c784cf1bac49c20a77b8f7d1541867c64076642a160a847ff449588d4e01e55", size = 14095 },
+]
+
+[[package]]
 name = "django-components"
 version = "0.152.0"
 source = { registry = "https://pypi.org/simple" }
@@ -576,6 +606,20 @@ dependencies = [
 sdist = { url = "https://files.pythonhosted.org/packages/94/4b/364fe61a161ead607dc6af311901ba8e62f537f8fdab94b5252cb6efe6d7/django-permissionedforms-0.1.tar.gz", hash = "sha256:4340bb20c4477fffb13b4cc5cccf9f1b1010b64f79956c291c72d2ad2ed243f8", size = 5856 }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/e6/5b/216157ff053f955b15b9dcdc13bfb6e406666445164fee9e332e141be96d/django_permissionedforms-0.1-py2.py3-none-any.whl", hash = "sha256:d341a961a27cc77fde8cc42141c6ab55cc1f0cb886963cc2d6967b9674fa47d6", size = 5744 },
+]
+
+[[package]]
+name = "django-sekizai"
+version = "4.1.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "django", version = "5.2.17", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version < '3.12'" },
+    { name = "django", version = "6.1.1", source = { registry = "https://pypi.org/simple" }, marker = "python_full_version >= '3.12'" },
+    { name = "django-classy-tags" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/be/b7/399f7d84fa34c67e7c8e1da39744c9a2f83b61fa600c854cbe43bf6aab56/django-sekizai-4.1.0.tar.gz", hash = "sha256:2aca36cbae0b5c0cefed9565416ec442335767fb3145bff11e58622fc653cdad", size = 14591 }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/c9/4f/8d1df68be504d7664cdeae7279134e77cf15babe2a5911b50f3e31d493f2/django_sekizai-4.1.0-py3-none-any.whl", hash = "sha256:aa12e66ba0335fbe726b7d74cf4e8716b89a0be99a1304a9b9e8b191229e2e4a", size = 8597 },
 ]
 
 [[package]]

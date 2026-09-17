@@ -1,22 +1,10 @@
-"""
-Citry regions inside ordinary Django templates.
-
-The contract is one rule, symmetric in both directions::
-
-    `{% ... %}` is Django. `{{ ... }}` and `<c-*>` are Citry.
-
-So these come in two halves: everything Citry allows must work here, because
-Citry's own parser compiles the region; and Django's tags must keep working
-unchanged on both sides of the boundary.
-"""
-
 import pytest
 
 from citry_django.rewrite import rewrite_source
 
 
 @pytest.fixture(autouse=True)
-def _fixtures(component):
+def fixtures(component):
     component('<h1 class="title-bar">{{ title }}</h1>', name="title-bar")
     component('<div class="wrapper"><c-slot/></div>', name="wrapper")
     component(

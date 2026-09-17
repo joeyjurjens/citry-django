@@ -1,11 +1,3 @@
-"""
-Real pages, through Django's whole request cycle.
-
-Everything else renders a template. These render a Wagtail site: pages really in
-the tree, an image with a real file behind it, and templates that both extend a
-base and hold Citry regions.
-"""
-
 from __future__ import annotations
 
 import re

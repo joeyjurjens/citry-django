@@ -1,12 +1,3 @@
-"""
-Real packages, installed and unmodified.
-
-The adapter names no tag, no loader and no framework, so the way to show that
-is to point it at things people actually install and check they behave as they
-would without it. Each class here covers one shape of integration that could
-plausibly break.
-"""
-
 from __future__ import annotations
 
 import re
@@ -275,10 +266,10 @@ class TestNodeInspectingTags:
 
     @pytest.fixture
     def block(self, render):
-        def _render(source, **context):
+        def render_source(source, **context):
             return render("{% load wagtail_block_components %}" + source, **context)
 
-        return _render
+        return render_source
 
     def test_keyword_arguments(self, block, db):
         assert "From kwargs" in block(
@@ -423,7 +414,7 @@ class TestOtherComponentFrameworks:
     """
 
     @pytest.fixture(autouse=True)
-    def _djc_component(self):
+    def djc_component(self):
         class CompatButton(DjcComponent):
             template = '<button class="djc-btn">{{ label }}</button>'
 

@@ -1,300 +1,362 @@
-"""
-Route Citry component assets through django-compressor.
-
-Citry collects each component's CSS and JS and emits them into the page.
-A project that runs django-compressor wants those assets preprocessed
-(SCSS, Less, CoffeeScript, ...) and minified before they reach the browser.
-
-This extension hooks Citry's ``on_dependencies`` lifecycle to feed assets
-into django-compressor's programmatic API, replacing inline content with
-compressed file URLs.
-
-Usage::
-
-    from citry import Citry
-    from citry_django import CitryDjangoExtension
-    from citry_django_compressor import CitryCompressorExtension
-
-    app = Citry(extensions=[CitryDjangoExtension(), CitryCompressorExtension()])
-
-Components declare assets the usual Citry way. To mark an asset for
-precompilation, set its ``type`` attribute to match a
-``COMPRESS_PRECOMPILERS`` entry::
-
-    from citry.ext.dependencies import Style
-
-    class MyComponent(Component):
-        class Dependencies:
-            css = [Style(content="...", attrs={"type": "text/x-scss"})]
-
-For file-based assets, use the ``Dependencies`` class with a URL and type.
-Use Django's ``static()`` to respect your ``STATIC_URL`` setting::
-
-    from django.templatetags.static import static
-
-    class MyComponent(Component):
-        class Dependencies:
-            css = [Style(url=static("component.scss"), attrs={"type": "text/x-scss"})]
-"""
-
 from __future__ import annotations
 
-import re
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from enum import StrEnum
+from functools import partial
+from pathlib import PurePosixPath
 from typing import Any
 
 from citry.ext.dependencies import Script, Style
 from citry.extension import Extension
+from compressor.cache import cache_get, cache_set, get_templatetag_cachekey
 from compressor.css import CssCompressor
 from compressor.js import JsCompressor
+from django.conf import settings
+
+from citry_django.page import current_page
 
 __all__ = ["CitryCompressorExtension"]
 
 
-# File extensions that map to precompiler MIME types.
-# Users can extend this via CITRY_COMPRESSOR_FILE_TYPES setting.
-DEFAULT_FILE_TYPES: dict[str, str] = {
-    # CSS precompilers
-    ".scss": "text/x-scss",
-    ".sass": "text/x-sass",
-    ".less": "text/less",
-    ".styl": "text/stylus",
-    # JS precompilers
-    ".coffee": "text/coffeescript",
+class Kind(StrEnum):
+    """The two groups django-compressor keeps apart."""
+
+    CSS = "css"
+    JS = "js"
+
+
+#: Marks a tag the page may still bundle with the rest of its group. Written
+#: only while a page is collecting, and gone by the time the page is finished:
+#: either the tag was bundled into one that does not carry it, or the mark is
+#: taken off again.
+BUNDLE_ATTR = "data-citry-bundle"
+
+#: The kinds that are the same on every page placing the component, and so are
+#: worth bundling. ``core`` is the client runtime a component registers against
+#: and ``variables`` is one instance's own ``js_data``, whose payload would
+#: otherwise land in a file meant to be shared between pages.
+BUNDLED_KINDS = frozenset({"component", "extra", "file"})
+
+
+@dataclass(frozen=True)
+class Asset:
+    """One asset django-compressor produced: a file it wrote, or content."""
+
+    attrs: dict[str, Any] = field(default_factory=dict)
+    url: str | None = None
+    content: str | None = None
+
+    def as_dependency(self, build: Any) -> Any:
+        if self.url is not None:
+            return build(url=self.url, attrs=self.attrs)
+        return build(content=self.content, attrs=self.attrs)
+
+
+class Collecting:
+    """django-compressor's own pipeline, read as values rather than as tags.
+
+    It answers in HTML: ``output()`` ends by rendering ``compressor/css_file.html``
+    with the URL of the file it wrote. One step earlier that URL is still a
+    value, and this reads it there. The template is rendered as well, so
+    ``post_compress`` still fires for a project listening to it, and nothing
+    about how compressing works is reimplemented here.
+
+    Grouping is the reason this reads a list. A stylesheet's ``media`` and a
+    script's ``async`` cannot be bundled across, so django-compressor splits
+    those into separate nodes, each rendering its own tag, and each node shares
+    the one ``context`` its parent was built with.
+    """
+
+    #: Where the values are kept, in the context django-compressor shares
+    #: between a compressor and the per-group nodes it copies from itself.
+    SINK = "citry_django_compressor"
+
+    @classmethod
+    def over(cls, kind: str, content: str) -> Collecting:
+        """One compressor whose per-group nodes report back to it.
+
+        The sink goes in before there is anything to put in it, because
+        ``Compressor.__init__`` keeps ``context or {}``: an empty one is
+        falsy, so a node copied from this compressor would be handed a
+        dictionary of its own and report into nothing.
+        """
+        return cls(kind, content=content, context={cls.SINK: []})
+
+    def render_output(self, mode: str, context: dict | None = None) -> str:
+        self.context[self.SINK].append({**(context or {}), **self.extra_context})
+        return super().render_output(mode, context)
+
+    def assets(self, mode: str = "file", forced: bool = False) -> list[Asset]:
+        self.output(mode=mode, forced=forced)
+        return [
+            Asset(
+                url=values.get("url"), content=values.get("content"), attrs=self.attrs_for(values)
+            )
+            for values in self.context[self.SINK]
+        ]
+
+    @staticmethod
+    def attrs_for(values: dict) -> dict[str, Any]:
+        raise NotImplementedError
+
+
+class CollectingCss(Collecting, CssCompressor):
+    @staticmethod
+    def attrs_for(values: dict) -> dict[str, Any]:
+        media = values.get("media")
+        return {"media": media} if media else {}
+
+
+class CollectingJs(Collecting, JsCompressor):
+    @staticmethod
+    def attrs_for(values: dict) -> dict[str, Any]:
+        #: django-compressor keeps these as the string it would put in the tag.
+        extra = (values.get("extra") or "").strip()
+        return {extra: True} if extra else {}
+
+
+#: What each group is compressed with, and what its results are built as.
+GROUPS: dict[Kind, tuple[type[Collecting], Any]] = {
+    Kind.CSS: (CollectingCss, Style),
+    Kind.JS: (CollectingJs, partial(Script, wrap=False)),
 }
 
-# Standard types that don't need precompilation.
-STANDARD_TYPES = frozenset({"text/css", "text/javascript", "module"})
 
+class Compression:
+    """django-compressor, handed assets and read back as assets.
 
-def _get_mimetype_from_url(url: str, file_types: dict[str, str]) -> str | None:
-    """Extract MIME type from URL based on file extension."""
-    for ext, mimetype in file_types.items():
-        if url.endswith(ext):
-            return mimetype
-    return None
+    Everything this knows is django-compressor's: what it can read, what it
+    does with it, and where its answer is a value rather than a tag. What is
+    worth handing over in the first place is Citry's question, and belongs to
+    the extension below.
 
-
-def _type_for(dep: Script | Style, file_types: dict[str, str]) -> str:
-    """The dependency's own ``type``, or the one its URL suffix implies."""
-    declared = dep.attrs.get("type")
-    if isinstance(declared, str) and declared:
-        return declared
-    if dep.url:
-        return _get_mimetype_from_url(dep.url, file_types) or ""
-    return ""
-
-
-def _needs_precompilation(dep: Script | Style, file_types: dict[str, str]) -> bool:
-    """Check if a dependency needs precompilation."""
-    type_attr = dep.attrs.get("type")
-    if type_attr and isinstance(type_attr, str) and type_attr not in STANDARD_TYPES:
-        return True
-
-    if dep.url:
-        return _get_mimetype_from_url(dep.url, file_types) is not None
-
-    return False
-
-
-def _build_compressor_content(
-    deps: list[Script | Style], kind: str, file_types: dict[str, str] | None = None
-) -> str:
-    """Build HTML content string for django-compressor.
-
-    A dependency that names no ``type`` gets the one its suffix implies.
-    django-compressor keys its precompilers on that attribute, so a `.scss`
-    without it would be concatenated as source; the caller should not have to
-    repeat what the extension already knows from the file name.
+    Both ways in end up at the same call. ``dependencies`` is for a render,
+    where Citry has objects; ``tags`` is for a finished page, where all that is
+    left is markup. django-compressor reads markup either way - that is what a
+    ``{% compress %}`` block hands it - so a dependency goes in as the tag
+    Citry would have written for it.
     """
-    if file_types is None:
-        file_types = DEFAULT_FILE_TYPES
-    parts = []
-    for dep in deps:
-        if kind == "css":
-            if dep.url:
-                attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = _type_for(dep, file_types)
-                type_str = f' type="{type_attr}"' if type_attr else ""
-                parts.append(f'<link rel="stylesheet" href="{dep.url}"{type_str}{attrs_str}/>')
-            else:
-                attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = _type_for(dep, file_types)
-                type_str = f' type="{type_attr}"' if type_attr else ""
-                attrs_prefix = f" {attrs_str}" if attrs_str else ""
-                parts.append(f"<style{type_str}{attrs_prefix}>{dep.content}</style>")
-        else:  # js
-            if dep.url:
-                attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = _type_for(dep, file_types)
-                type_str = f' type="{type_attr}"' if type_attr else ""
-                parts.append(f'<script src="{dep.url}"{type_str}{attrs_str}></script>')
-            else:
-                attrs_str = " ".join(f'{k}="{v}"' for k, v in dep.attrs.items() if k != "type")
-                type_attr = _type_for(dep, file_types)
-                type_str = f' type="{type_attr}"' if type_attr else ""
-                attrs_prefix = f" {attrs_str}" if attrs_str else ""
-                parts.append(f"<script{type_str}{attrs_prefix}>{dep.content}</script>")
-    return "\n".join(parts)
 
+    def __init__(self, force: Callable[[], bool] | None = None) -> None:
+        self.force = force
 
-def _extract_urls_from_output(html: str, kind: str) -> list[dict[str, Any]]:
-    """
-    Extract URLs and attributes from compressor output HTML.
+    def forced(self) -> bool:
+        """Whether this render must bypass django-compressor's cache.
 
-    Returns list of dicts with 'url' or 'content' and optional 'attrs'.
-    """
-    results = []
+        A project says so when its output depends on something the cache key
+        does not cover - Wagtail's preview of unsaved theme settings is the
+        case this exists for.
+        """
+        return bool(self.force and self.force())
 
-    if kind == "css":
-        # Parse <link> tags
-        for match in re.finditer(r'<link[^>]*href="([^"]+)"[^>]*/?>', html, re.IGNORECASE):
-            url = match.group(1)
-            attrs = {}
-            tag_str = match.group(0)
-            media_match = re.search(r'media="([^"]+)"', tag_str, re.IGNORECASE)
-            if media_match:
-                attrs["media"] = media_match.group(1)
-            results.append({"url": url, "attrs": attrs})
+    def reads(self, dep: Script | Style) -> bool:
+        """Whether django-compressor can read this asset at all.
 
-        # Parse inline <style> tags (when compression is disabled)
-        for match in re.finditer(r"<style[^>]*>(.*?)</style>", html, re.IGNORECASE | re.DOTALL):
-            content = match.group(1)
-            tag_str = match.group(0)
-            attrs = {}
-            media_match = re.search(r'media="([^"]+)"', tag_str, re.IGNORECASE)
-            if media_match:
-                attrs["media"] = media_match.group(1)
-            results.append({"content": content, "attrs": attrs})
-    else:  # js
-        # Parse <script> tags with src
-        for match in re.finditer(r'<script[^>]*src="([^"]+)"[^>]*>', html, re.IGNORECASE):
-            url = match.group(1)
-            tag_str = match.group(0)
-            attrs = {}
-            if re.search(r"\bdefer\b", tag_str, re.IGNORECASE):
-                attrs["defer"] = True
-            if re.search(r"\basync\b", tag_str, re.IGNORECASE):
-                attrs["async"] = True
-            results.append({"url": url, "attrs": attrs})
+        Two things put one out of reach. An asset somewhere django-compressor
+        does not serve from is not its to read, which is what keeps a
+        component's CDN script out of a bundle rather than ending the response
+        with `UncompressableFileError`. And one with neither a URL nor content
+        has nothing to read.
 
-        # Parse inline <script> tags (when compression is disabled)
-        for match in re.finditer(r"<script([^>]*)>(.*?)</script>", html, re.IGNORECASE | re.DOTALL):
-            attrs_str = match.group(1)
-            content = match.group(2)
-            if re.search(r'src="', attrs_str, re.IGNORECASE):
-                continue
-            attrs = {}
-            if re.search(r"\bdefer\b", attrs_str, re.IGNORECASE):
-                attrs["defer"] = True
-            if re.search(r"\basync\b", attrs_str, re.IGNORECASE):
-                attrs["async"] = True
-            results.append({"content": content, "attrs": attrs})
+        What is left depends on `COMPRESS_ENABLED`. With it on, everything
+        goes through, which minifies and bundles the ordinary `.css` and `.js`
+        a component declares and not only what a precompiler is configured for.
+        With it off, only what needs precompiling: a `.scss` still has to
+        become CSS in development, and the rest is left where Citry put it so
+        what you read in the browser is what you wrote.
+        """
+        url = getattr(dep, "url", None)
+        if url and not url.startswith(str(settings.COMPRESS_URL)):
+            return False
+        if not (url or getattr(dep, "content", None)):
+            return False
+        return bool(settings.COMPRESS_ENABLED) or self.precompiles(dep)
 
-    return results
+    def precompiles(self, dep: Script | Style) -> bool:
+        """Whether django-compressor has a precompiler to run over `dep`.
+
+        Keyed on the asset's own ``type``, or on the one
+        `CITRY_COMPRESSOR_FILE_TYPES` gives its suffix, because that attribute
+        is the only thing django-compressor keys them on. An asset that names
+        neither arrives as source and leaves as source, exactly as a
+        `<link href="x.scss">` with no ``type`` would inside a
+        ``{% compress %}`` block.
+        """
+        declared = self.typed(dep).attrs.get("type")
+        return bool(declared) and declared in dict(settings.COMPRESS_PRECOMPILERS)
+
+    def dependencies(self, deps: list[Any], kind: Kind) -> list[Any]:
+        """`deps` as django-compressor leaves them, one group at a time."""
+        build = GROUPS[kind][1]
+        return [asset.as_dependency(build) for asset in self.of(self.markup(deps), kind)]
+
+    def tags(self, tags: list[str], kind: Kind) -> list[str]:
+        """`tags` as django-compressor leaves them, still markup."""
+        build = GROUPS[kind][1]
+        return [str(asset.as_dependency(build).render()) for asset in self.of(tags, kind)]
+
+    def of(self, markup: list[str], kind: Kind) -> list[Asset]:
+        """What django-compressor makes of `markup`, from its cache where allowed.
+
+        That cache lives in the ``{% compress %}`` tag rather than in
+        ``output()``, so calling ``output()`` directly recompiles the SCSS every
+        time: once per emission, and a page that places one component ten times
+        pays ten times. The rule here is the tag's own rule, and the key is
+        django-compressor's too, a digest of the content plus the mtimes of its
+        sources, so an edited stylesheet still invalidates.
+        """
+        content = "\n".join(markup)
+        if not content.strip():
+            return []
+
+        compressor = GROUPS[kind][0].over(kind, content)
+        if self.forced() or not settings.COMPRESS_ENABLED:
+            return compressor.assets(forced=True)
+
+        key = get_templatetag_cachekey(compressor, "file", kind)
+        cached = cache_get(key)
+        if cached is not None:
+            return cached
+        assets = compressor.assets(forced=True)
+        cache_set(key, assets)
+        return assets
+
+    def markup(self, deps: list[Any]) -> list[str]:
+        """`deps` as the tags Citry would have written for them."""
+        return [str(self.typed(dep).render()) for dep in deps]
+
+    def typed(self, dep: Any) -> Any:
+        """`dep`, saying what compiles it when the project mapped its suffix.
+
+        An asset's own ``type`` always wins. `CITRY_COMPRESSOR_FILE_TYPES` is
+        for the rest, so a project spells the mapping once instead of at every
+        call site, and one call can name a `.css` and a `.scss` together.
+        """
+        if dep.attrs.get("type") or not dep.url:
+            return dep
+        suffix = PurePosixPath(dep.url).suffix.lower()
+        mimetype = self.file_types().get(suffix)
+        return dep if mimetype is None else replace(dep, attrs={**dep.attrs, "type": mimetype})
+
+    @staticmethod
+    def file_types() -> dict[str, str]:
+        """Suffix to the mimetype this project compiles it under.
+
+        Empty unless the project says otherwise: which suffixes it compiles,
+        and under which of its own `COMPRESS_PRECOMPILERS` names, is not this
+        package's to guess.
+        """
+        return dict(getattr(settings, "CITRY_COMPRESSOR_FILE_TYPES", {}))
 
 
 class CitryCompressorExtension(Extension):
     """
-    Routes Citry component assets through django-compressor.
+    Citry's component assets, routed through django-compressor.
 
-    Assets marked with a precompiler ``type`` attribute are fed to
-    django-compressor, which preprocesses (SCSS, Less, etc.) and minifies
-    them. The original dependencies are replaced with URL-based ones
-    pointing to the compressed output.
+    An asset a browser cannot read on its own - SCSS, Less, CoffeeScript - is
+    fed to django-compressor, which precompiles and minifies it, and the
+    dependency is replaced by one pointing at the compressed file. Say what
+    compiles it the way you would in a template, with the asset's own ``type``::
 
-    Citry's deduplication runs before this hook, so identical assets from
-    multiple components are only compressed once.
+        class Dependencies:
+            css = [Style(url=static("theme.scss"), attrs={"type": "text/x-scss"})]
 
-    For file-based assets, use the ``Dependencies`` class with a URL and
-    explicit ``type`` attribute. The extension detects the file type from
-    the URL extension or the ``type`` attribute.
+    Two hooks, because there are two moments. `on_dependencies` fires while one
+    Citry region is being serialized, and `on_page_assets` once the page holding
+    those regions is finished. Only the second sees a whole response, so only
+    the second can make one file of it.
+
+    ``sort`` decides the order inside that file; see :meth:`bundled`.
     """
 
     name = "compressor"
 
-    def __init__(self) -> None:
-        self._file_types: dict[str, str] | None = None
-
-    def _get_file_types(self) -> dict[str, str]:
-        """Get file extension to MIME type mapping, with user overrides."""
-        if self._file_types is None:
-            from django.conf import settings
-
-            user_types = getattr(settings, "CITRY_COMPRESSOR_FILE_TYPES", {})
-            self._file_types = {**DEFAULT_FILE_TYPES, **user_types}
-        return self._file_types
+    def __init__(self, force: Callable[[], bool] | None = None, *, sort: bool = True) -> None:
+        self.compression = Compression(force)
+        self.sort = sort
 
     def on_dependencies(self, ctx: Any) -> None:
+        """Replace what django-compressor will take with what it made."""
+        ctx.styles[:] = self.replaced(ctx.styles, Kind.CSS)
+        ctx.scripts[:] = self.replaced(ctx.scripts, Kind.JS)
+
+    def on_page_assets(self, asset: Any) -> tuple[str, ...]:
+        """One page's worth of a group, as one file.
+
+        This hook is what makes the difference between a bundle per `<c-*>`
+        region and a bundle per response: two regions holding different
+        components compress to two files however little is in them, because
+        neither render can see the other.
+
+        Bundling needs somewhere to put the result, so a page that named no
+        spot for this group keeps the files its regions made, and the marks
+        that said they could still be bundled come off.
         """
-        Hook into Citry's dependency emission to compress assets.
+        mine = [tag for tag in asset.tags if BUNDLE_ATTR in tag]
+        if not mine:
+            return asset.tags
+        if not asset.collected:
+            return tuple(self.unmarked(tag) for tag in asset.tags)
+        return self.bundled(Kind(str(asset.kind)), asset.tags, mine)
 
-        Citry has already deduplicated assets by this point, so we only
-        see each unique asset once. We collect assets that need
-        precompilation, feed them to django-compressor, and replace the
-        originals with compressed URLs.
+    def replaced(self, deps: list[Any], kind: Kind) -> list[Any]:
+        """`deps` with the ones worth compressing swapped for what came back."""
+        ours = [dep for dep in deps if self.shareable(dep) and self.compression.reads(dep)]
+        if not ours:
+            return deps
+        untouched = [dep for dep in deps if dep not in ours]
+        compressed = self.compression.dependencies(ours, kind)
+        return untouched + [self.marked(dep) for dep in compressed]
+
+    def shareable(self, dep: Script | Style) -> bool:
+        """Whether this asset is the same on every page placing the component.
+
+        Two things say it is not. A kind that belongs to one render cannot be
+        shared between pages: `core` is the client runtime and `variables` is
+        one instance's own `js_data`. And an asset Citry serves from its own
+        routes is not in staticfiles, where django-compressor reads.
         """
-        file_types = self._get_file_types()
+        if getattr(dep, "kind", None) not in BUNDLED_KINDS:
+            return False
+        url = getattr(dep, "url", None)
+        prefix = self.citry.mounted_prefix
+        return not (url and prefix and url.startswith(prefix))
 
-        css_to_compress: list[Style] = []
-        css_passthrough: list[Style] = []
-        js_to_compress: list[Script] = []
-        js_passthrough: list[Script] = []
+    def bundled(self, kind: Kind, tags: tuple[str, ...], mine: list[str]) -> tuple[str, ...]:
+        """`tags` with everything bundleable replaced, in place, by one file.
 
-        for style in ctx.styles:
-            if _needs_precompilation(style, file_types):
-                css_to_compress.append(style)
-            else:
-                css_passthrough.append(style)
+        In place because position is meaning: what a bundle does not swallow
+        still has to come before or after it. The bundle takes the position of
+        the first tag it swallowed.
 
-        for script in ctx.scripts:
-            # Skip core scripts (Citry runtime, manifest) - already optimized
-            if script.kind == "core":
-                js_passthrough.append(script)
-            elif _needs_precompilation(script, file_types):
-                js_to_compress.append(script)
-            else:
-                js_passthrough.append(script)
+        What goes *inside* it is sorted, because a compressed file is named
+        after its own bytes. Components arrive in whatever order a page reaches
+        them, so two pages placing the same components differently would write
+        two files with identical contents in a different order, and a visitor
+        moving between them would download both. Sorting makes one set of
+        components one file, wherever they sit.
 
-        if css_to_compress:
-            compressed_css = self._compress_css(css_to_compress)
-            ctx.styles[:] = css_passthrough + compressed_css
+        `sort=False` keeps the order the page has them in, for a project whose
+        component stylesheets rely on it.
+        """
+        replacement = self.compression.tags(sorted(mine) if self.sort else mine, kind)
+        placed: list[str] = []
+        for tag in tags:
+            if BUNDLE_ATTR not in tag:
+                placed.append(tag)
+            elif replacement:
+                placed.extend(replacement)
+                replacement = []
+        return tuple(placed)
 
-        if js_to_compress:
-            compressed_js = self._compress_js(js_to_compress)
-            ctx.scripts[:] = js_passthrough + compressed_js
+    @staticmethod
+    def marked(dep: Any) -> Any:
+        """`dep`, saying the page may still bundle it, while there is a page."""
+        if current_page.get() is None:
+            return dep
+        return replace(dep, attrs={**dep.attrs, BUNDLE_ATTR: ""})
 
-    def _compress_css(self, deps: list[Style]) -> list[Style]:
-        """Compress CSS dependencies and return new Style objects with URLs."""
-        content = _build_compressor_content(deps, "css", self._get_file_types())
-        if not content.strip():
-            return []
-
-        compressor = CssCompressor("css", content=content)
-        output_html = compressor.output(mode="file", forced=True)
-
-        results = []
-        for item in _extract_urls_from_output(output_html, "css"):
-            if "url" in item:
-                results.append(Style(url=item["url"], attrs=item.get("attrs", {})))
-            elif "content" in item:
-                results.append(Style(content=item["content"], attrs=item.get("attrs", {})))
-        return results
-
-    def _compress_js(self, deps: list[Script]) -> list[Script]:
-        """Compress JS dependencies and return new Script objects with URLs."""
-        content = _build_compressor_content(deps, "js", self._get_file_types())
-        if not content.strip():
-            return []
-
-        compressor = JsCompressor("js", content=content)
-        output_html = compressor.output(mode="file", forced=True)
-
-        results = []
-        for item in _extract_urls_from_output(output_html, "js"):
-            if "url" in item:
-                results.append(Script(url=item["url"], attrs=item.get("attrs", {}), wrap=False))
-            elif "content" in item:
-                results.append(
-                    Script(content=item["content"], attrs=item.get("attrs", {}), wrap=False)
-                )
-        return results
+    @staticmethod
+    def unmarked(tag: str) -> str:
+        return tag.replace(f' {BUNDLE_ATTR}=""', "").replace(f" {BUNDLE_ATTR}", "")

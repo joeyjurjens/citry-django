@@ -1,129 +1,77 @@
 # citry-django-compressor
 
-Route [Citry](https://citry.dev) component assets through [django-compressor](https://django-compressor.readthedocs.io/) for preprocessing and minification.
+Routes Citry components' CSS and JS through [django-compressor](https://django-compressor.readthedocs.io/), so they are preprocessed, minified and served as compressed files.
 
-## Why?
+## Which package do I want?
 
-Citry collects each component's CSS and JS and emits them into the page. If your project uses django-compressor for asset preprocessing (SCSS, Less, CoffeeScript, ...) and minification, this extension bridges the two.
+It depends on who owns the page.
 
-## Installation
+**Citry owns the page.** A view renders one component tree and Citry holds the whole page's deduplicated asset list, placing it through [`<c-css />` and `<c-js />`](https://citry.dev/advanced/asset-placement/). This package takes that list and hands it to django-compressor. **Use this package.**
+
+**Django owns the page.** Your `<head>` lives in a Django template and Citry renders `<c-*>` regions inside it, each collecting its own assets. citry-django's page is what brings those together, and this package bundles what it collected into one file per response. Say where with `<c-css />` and `<c-js />` in your base template. **Use this package.**
+
+## Setup
 
 ```bash
 pip install citry-django-compressor
 ```
 
-## Usage
-
-Register the extension with your Citry instance:
-
 ```python
+# myproject/citry_app.py
 from citry import Citry
 from citry_django import CitryDjangoExtension
 from citry_django_compressor import CitryCompressorExtension
 
-app = Citry(
-    extensions=[
-        CitryDjangoExtension(),
-        CitryCompressorExtension(),
-    ]
-)
+app = Citry(extensions=[CitryDjangoExtension(), CitryCompressorExtension()])
 ```
 
-### Inline Content with Precompilation
+Components keep declaring assets [the way Citry documents](https://citry.dev/advanced/js-and-css-dependencies/). Nothing else is added to a component.
 
-To mark inline content for precompilation, set its `type` attribute to match a `COMPRESS_PRECOMPILERS` entry:
+## What it does
+
+At serialize time the extension takes the render's final, deduplicated asset lists, feeds them to django-compressor as one CSS group and one JS group, and replaces them with the compressed results. Citry's own runtime scripts are left alone: they are not yours to bundle.
+
+Results come from django-compressor's cache where that is allowed, keyed the way the `{% compress %}` tag keys it, on a digest of the content plus the mtimes of its sources. Without that every render recompiles its SCSS from scratch.
+
+## Citry's dependency strategy
+
+This package rewrites what Citry resolves, so `CITRY_DEPS_STRATEGY`, citry-django's setting for what gets serialized, decides what it can reach. Leave it at its default: on `"ignore"` Citry resolves nothing, there is nothing to compress, and a page loads without its component styles.
+
+## Settings
+
+Everything is django-compressor's own configuration. There is no separate setting for whether to compress: `COMPRESS_ENABLED` decides, exactly as it does for the template tag.
 
 ```python
-from citry import Component
-from citry.ext.dependencies import Style, Script
-
-
-class MyComponent(Component):
-    class Dependencies:
-        css = [
-            Style(content="...", attrs={"type": "text/x-scss"}),
-        ]
-        js = [
-            Script(content="square = (x) -> x * x", attrs={"type": "text/coffeescript"}),
-        ]
+# settings.py
+COMPRESS_ENABLED = True
+COMPRESS_PRECOMPILERS = (("text/x-scss", "django_libsass.SassCompiler"),)
+STATICFILES_FINDERS = [..., "compressor.finders.CompressorFinder"]
 ```
 
-### File-Based Assets
-
-For file-based assets, use the `Dependencies` class with a URL and `type` attribute. Use Django's `static()` to respect your `STATIC_URL` setting:
+There is no setting here at all. What compiles an asset is the asset's own `type`, written the way you would write it in a template:
 
 ```python
-from django.templatetags.static import static
-from citry import Component
-from citry.ext.dependencies import Style
-
-
-class MyComponent(Component):
-    class Dependencies:
-        css = [
-            Style(url=static("component.scss"), attrs={"type": "text/x-scss"}),
-        ]
+class Dependencies:
+    css = [Style(url=static("theme.scss"), attrs={"type": "text/x-scss"})]
 ```
 
-Django-compressor will find the file via staticfiles, precompile it, and output a compressed URL.
+django-compressor picks its precompiler on that attribute and nothing else, so a `.scss` that declares no type arrives as source and leaves as source, exactly as a `<link href="x.scss">` without one would inside a `{% compress %}` block. The mimetype is an arbitrary string that has to match your `COMPRESS_PRECOMPILERS` entry exactly.
 
-### Django Settings
+## Options
 
-Configure django-compressor as usual:
+| Option | Default | What it does |
+| --- | --- | --- |
+| `force` | `None` | A callable answering whether this render must bypass the cache. |
+
+`force` exists for output that depends on something the cache key cannot see. Wagtail's preview of unsaved theme settings is the case it was written for: the compiled CSS differs, the content and mtimes do not, so a cached entry would show the wrong thing.
 
 ```python
-INSTALLED_APPS = [
-    # ...
-    "compressor",
-]
-
-STATICFILES_FINDERS = [
-    # ...
-    "compressor.finders.CompressorFinder",
-]
-
-COMPRESS_PRECOMPILERS = (
-    ("text/x-scss", "django_libsass.SassCompiler"),
-    ("text/x-sass", "django_libsass.SassCompiler"),
-    ("text/less", "lessc {infile} {outfile}"),
-    ("text/coffeescript", "coffee --compile --stdio"),
-)
+CitryCompressorExtension(force=lambda: getattr(get_current_request(), "is_preview", False))
 ```
-
-### Custom File Type Mapping
-
-By default, the extension maps these file extensions to MIME types:
-
-| Extension | MIME Type |
-|-----------|-----------|
-| `.scss` | `text/x-scss` |
-| `.sass` | `text/x-sass` |
-| `.less` | `text/less` |
-| `.styl` | `text/stylus` |
-| `.coffee` | `text/coffeescript` |
-
-Extend or override with `CITRY_COMPRESSOR_FILE_TYPES`:
-
-```python
-CITRY_COMPRESSOR_FILE_TYPES = {
-    ".myformat": "text/x-myformat",
-}
-```
-
-## How It Works
-
-1. Citry collects each component's CSS and JS during rendering
-2. Citry deduplicates identical assets (same content or URL)
-3. Before emitting, the extension's `on_dependencies` hook fires
-4. Assets with precompiler `type` attributes are collected
-5. They're fed to django-compressor's programmatic API
-6. The original dependencies are replaced with URL-based ones pointing to compressed output
-
-Citry's `$component()` callbacks and `js_data()` work normally - they're just JavaScript content that passes through compression unchanged.
 
 ## Limitations
 
-- **`css_file` / `js_file`**: When using Citry's `css_file = "component.scss"`, the file content is inlined and the filename is not preserved. The extension cannot detect the file type automatically. Use the `Dependencies` class with explicit `type` attribute instead.
+Bundling a whole response needs somewhere to put the result, so a base template that writes no `<c-css />` or `<c-js />` keeps one compressed file per `<c-*>` region: the assets stay where Citry put them, and putting a bundle somewhere you did not ask for it would be worse than not making one.
 
 ## License
 

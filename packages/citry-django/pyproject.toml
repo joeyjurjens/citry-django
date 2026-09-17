@@ -12,7 +12,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Joey Jurjens", email = "joeyjurjens@gmail.com" }]
 keywords = ["citry", "django", "templates", "components"]
-dependencies = ["citry>=0.4.3", "django>=5.2"]
+dependencies = ["citry>=0.5.1", "django>=5.2"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Web Environment",

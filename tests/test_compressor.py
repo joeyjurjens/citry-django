@@ -1,10 +1,3 @@
-"""
-Tests for citry-django-compressor integration.
-
-Verifies that Citry component assets with precompiler type attributes are
-correctly fed through django-compressor and replaced with compressed URLs.
-"""
-
 import re
 
 import pytest
@@ -15,25 +8,23 @@ from django.template import Context, engines
 def render_page(rf):
     """Render through the project's engine."""
 
-    def _render(source, **context):
+    def render_source(source, **context):
         context.setdefault("request", rf.get("/"))
         return engines["citry"].from_string(source).template.render(Context(context))
 
-    return _render
+    return render_source
 
 
 @pytest.fixture
 def compressor_enabled(settings):
     """Enable compression for tests that need it."""
     settings.COMPRESS_ENABLED = True
-    settings.CITRY_DEPS_STRATEGY = "document"
 
 
 @pytest.fixture
 def compressor_disabled(settings):
     """Disable compression but keep precompilers active."""
     settings.COMPRESS_ENABLED = False
-    settings.CITRY_DEPS_STRATEGY = "document"
 
 
 @pytest.fixture
@@ -41,7 +32,6 @@ def no_compressor(settings):
     """No compression, no precompilers - assets pass through unchanged."""
     settings.COMPRESS_ENABLED = False
     settings.COMPRESS_PRECOMPILERS = ()
-    settings.CITRY_DEPS_STRATEGY = "document"
 
 
 def styles(html):
@@ -66,6 +56,13 @@ def link_tags(html):
 
 def script_src_tags(html):
     return re.findall(r'<script[^>]*src="[^"]+"[^>]*>', html, re.S)
+
+
+def extension():
+    """The extension, for the two methods a test exercises directly."""
+    from citry_django_compressor import CitryCompressorExtension
+
+    return CitryCompressorExtension()
 
 
 class TestCompressorIntegration:
@@ -146,9 +143,6 @@ class TestJavaScriptCallbacks:
         # js_data is serialized as a script that registers the data with Citry's manager
         # Look for the registerComponentData call which contains the data
         assert "registerComponentData" in html
-        # The data key should be present (base64 encoded in the script)
-        assert "callback_value" in html
-
         # Extract the base64 encoded data from the registerComponentData call
         match = re.search(r'registerComponentData\([^,]+,\s*[^,]+,\s*atob\("([^"]+)"\)\)', html)
         assert match is not None, "Could not find registerComponentData call with base64 data"
@@ -190,13 +184,9 @@ class TestDeduplication:
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_identical_scss_deduplicated(self, render_page):
-        """Same SCSS from multiple components should only be compressed once."""
+        """The same SCSS from three components is compressed once."""
         html = render_page("<c-scss-component/><c-scss-component/><c-scss-component/>")
-        # Should only have one compressed CSS file, not three
-        link_count = html.count('rel="stylesheet"')
-        # At least one link tag for the compressed CSS
-        assert link_count >= 1
-        # The component should render three times
+        assert html.count('rel="stylesheet"') == 1
         assert html.count("scss-test") == 3
 
     @pytest.mark.usefixtures("compressor_enabled")
@@ -211,192 +201,235 @@ class TestMixedAssets:
     """Tests for components with both regular and precompiled assets."""
 
     @pytest.mark.usefixtures("compressor_enabled")
-    def test_mixed_regular_and_scss(self, render_page):
-        """Component with both regular CSS and SCSS should work."""
+    def test_regular_and_scss_land_in_one_file(self, render_page):
+        """One stylesheet for both, and the Sass compiled on the way."""
         html = render_page("<c-mixed-component/>")
-        # Should have compressed output
-        assert 'rel="stylesheet"' in html
-        # Both classes should be in the output (regular or compressed)
+        assert html.count('rel="stylesheet"') == 1
+        assert "/CACHE/css/" in html
         assert "mixed-test" in html
-        # The regular CSS should be present
-        assert ".regular" in html or "regular" in html
-        # The SCSS should be compiled (no nesting syntax)
         assert "&.nested" not in html
 
     @pytest.mark.usefixtures("compressor_enabled")
-    def test_regular_css_not_affected(self, render_page):
-        """Regular CSS without type attribute passes through normally."""
+    def test_regular_css_is_bundled_too(self, render_page):
+        """Not only what needs a precompiler: plain CSS is minified and
+        bundled the way `{% compress %}` would on any Django page."""
         html = render_page("<c-swatch label='test'/>")
-        # Regular CSS should be present
-        assert ".swatch" in html
+        assert "/CACHE/css/" in html
+        assert ".swatch{" not in html
 
     @pytest.mark.usefixtures("compressor_enabled")
-    def test_core_scripts_preserved(self, render_page):
-        """Citry's core scripts (runtime, manifest) are not compressed."""
-        html = render_page("<c-swatch label='test'/>")
-        # Citry runtime should be present
-        assert "data-citry" in html or "citry" in html.lower()
+    def test_core_scripts_stay_where_citry_put_them(self, render_page):
+        """The runtime is the same on every page but Citry serves it itself,
+        and one instance's `js_data` belongs to that instance."""
+        html = render_page("<c-callback-component value='myvalue'/>")
+        assert "registerComponentData" in html
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_multiple_components_compressed_together(self, render_page):
-        """Multiple components' assets are compressed into single files."""
+        """Two components with different CSS still produce one stylesheet.
+
+        The whole reason to route Citry's assets through django-compressor: a
+        page asks for one file however many components contributed to it.
+        """
         html = render_page("<c-scss-component/><c-swatch label='test'/>")
-        # Both components should render
         assert "scss-test" in html
         assert "swatch" in html
+        assert html.count('rel="stylesheet"') == 1
 
 
-class TestFileTypeDetection:
-    """Tests for file extension to MIME type mapping."""
+class TestWhatCompressorIsOffered:
+    """Which assets are handed over, and as what."""
 
-    def test_default_file_types(self):
-        """Default file types are configured correctly."""
-        from citry_django_compressor import DEFAULT_FILE_TYPES
+    @staticmethod
+    def compression():
+        from citry_django_compressor import Compression
 
-        assert ".scss" in DEFAULT_FILE_TYPES
-        assert DEFAULT_FILE_TYPES[".scss"] == "text/x-scss"
-        assert ".coffee" in DEFAULT_FILE_TYPES
-        assert DEFAULT_FILE_TYPES[".coffee"] == "text/coffeescript"
+        return Compression()
+
+    def test_a_declared_type_is_what_says_it_needs_compiling(self):
+        """django-compressor keys its precompilers on nothing else."""
+        from citry.ext.dependencies import Style
+
+        assert self.compression().precompiles(Style(content="x", attrs={"type": "text/x-scss"}))
+        assert not self.compression().precompiles(Style(content="x", attrs={"type": "text/css"}))
+
+    def test_the_project_can_map_its_own_suffixes(self, settings):
+        """So one call can name a `.css` and a `.scss` together.
+
+        `styles()` writes its keyword attributes onto every path it is given,
+        so a declared `type` is all-or-nothing per call. The mapping belongs to
+        the project anyway: which suffixes it compiles, and under which of its
+        own `COMPRESS_PRECOMPILERS` names.
+        """
+        from citry.ext.dependencies import Style
+
+        settings.CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
+        plain, sass = Style(url="/static/a.css"), Style(url="/static/b.scss")
+
+        assert not self.compression().precompiles(plain)
+        assert self.compression().precompiles(sass)
+        assert 'type="text/x-scss"' in self.compression().markup([sass])[0]
+
+    def test_a_declared_type_wins_over_the_mapping(self, settings):
+        from citry.ext.dependencies import Style
+
+        settings.CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
+        declared = Style(url="/static/b.scss", attrs={"type": "text/plain"})
+
+        assert 'type="text/plain"' in self.compression().markup([declared])[0]
+
+    def test_a_suffix_alone_says_nothing(self):
+        """Without that mapping, a `.scss` is source and stays source.
+
+        Reading a type out of the suffix on our own would be this package
+        deciding what a file is, and the mimetype has to match the project's
+        `COMPRESS_PRECOMPILERS` exactly, so nothing is assumed.
+        """
+        from citry.ext.dependencies import Style
+
+        assert not self.compression().precompiles(Style(url="/static/a.scss"))
 
     @pytest.mark.usefixtures("compressor_enabled")
-    def test_custom_file_types(self, settings, render_page):
-        """Custom file types can be added via settings."""
-        settings.CITRY_COMPRESSOR_FILE_TYPES = {
-            ".custom": "text/x-custom",
-        }
-        # The extension should pick up the custom mapping
-        # (This is a basic test - full integration would need a custom precompiler)
-        from citry_django_compressor import CitryCompressorExtension
-
-        ext = CitryCompressorExtension()
-        file_types = ext._get_file_types()
-        assert ".custom" in file_types
-        assert ".scss" in file_types  # Defaults still present
-
-
-class TestNeedsPrecompilation:
-    """Tests for the _needs_precompilation helper."""
-
-    def test_type_attribute_triggers_precompilation(self):
-        """Explicit type attribute triggers precompilation."""
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _needs_precompilation
-
-        style = Style(content="test", attrs={"type": "text/x-scss"})
-        assert _needs_precompilation(style, {}) is True
-
-    def test_standard_css_no_precompilation(self):
-        """Standard CSS type does not trigger precompilation."""
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _needs_precompilation
-
-        style = Style(content="test", attrs={"type": "text/css"})
-        assert _needs_precompilation(style, {}) is False
-
-    def test_no_type_no_precompilation(self):
-        """No type attribute does not trigger precompilation."""
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _needs_precompilation
-
-        style = Style(content="test", attrs={})
-        assert _needs_precompilation(style, {}) is False
-
-    def test_url_extension_triggers_precompilation(self):
-        """URL with precompiler extension triggers precompilation."""
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import DEFAULT_FILE_TYPES, _needs_precompilation
-
-        style = Style(url="/static/test.scss", attrs={})
-        assert _needs_precompilation(style, DEFAULT_FILE_TYPES) is True
-
-    def test_url_without_extension_no_precompilation(self):
-        """URL without precompiler extension does not trigger precompilation."""
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import DEFAULT_FILE_TYPES, _needs_precompilation
-
-        style = Style(url="/static/test.css", attrs={})
-        assert _needs_precompilation(style, DEFAULT_FILE_TYPES) is False
-
-
-class TestTypeFromSuffix:
-    """A file whose suffix says what compiles it needs no ``type`` of its own.
-
-    The extension already recognises `.scss` by its URL when deciding what to
-    compress; writing the type into the content it hands django-compressor is
-    the other half of that, and without it the file arrives as source.
-    """
-
-    def test_a_scss_url_gets_its_type_written_out(self):
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _build_compressor_content
-
-        content = _build_compressor_content([Style(url="/static/a.scss")], "css")
-        assert 'type="text/x-scss"' in content
-
-    def test_a_plain_css_url_gets_none(self):
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _build_compressor_content
-
-        content = _build_compressor_content([Style(url="/static/a.css")], "css")
-        assert "type=" not in content
-
-    def test_a_declared_type_is_left_alone(self):
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _build_compressor_content
-
-        style = Style(url="/static/a.scss", attrs={"type": "text/plain"})
-        content = _build_compressor_content([style], "css")
-        assert 'type="text/plain"' in content
-
-
-class TestBuildCompressorContent:
-    """Tests for building HTML content for django-compressor."""
-
-    def test_build_css_content(self):
-        """CSS content is built correctly."""
-        from citry.ext.dependencies import Style
-
-        from citry_django_compressor import _build_compressor_content
-
-        deps = [
-            Style(content=".test { color: red; }", attrs={}),
-            Style(content=".other { color: blue; }", attrs={"type": "text/x-scss"}),
-        ]
-        content = _build_compressor_content(deps, "css")
-        assert "<style>.test { color: red; }</style>" in content
-        assert 'type="text/x-scss"' in content
-
-    def test_build_js_content(self):
-        """JS content is built correctly."""
+    def test_an_asset_it_does_not_serve_is_out_of_reach(self):
         from citry.ext.dependencies import Script
 
-        from citry_django_compressor import _build_compressor_content
+        assert not self.compression().reads(Script(url="https://cdn.example.com/lib.js"))
+        assert self.compression().reads(Script(url="/static/a.js"))
 
-        deps = [
-            Script(content="console.log('hi');", attrs={}),
-        ]
-        content = _build_compressor_content(deps, "js")
-        assert "<script>console.log('hi');</script>" in content
+    def test_nothing_to_read_is_not_offered(self):
+        from citry.ext.dependencies import Style
 
-    def test_build_url_content(self):
-        """URL-based dependencies are built correctly."""
+        assert not self.compression().reads(Style())
+
+    def test_a_dependency_goes_in_as_the_tag_citry_wrote(self):
+        """No tag is built here: Citry already knows how to write one."""
         from citry.ext.dependencies import Script, Style
 
-        from citry_django_compressor import _build_compressor_content
+        deps = [
+            Style(content=".a{}", attrs={"type": "text/x-scss"}),
+            Script(url="/static/a.js"),
+        ]
+        markup = self.compression().markup(deps)
 
-        css_deps = [Style(url="/static/test.css", attrs={})]
-        css_content = _build_compressor_content(css_deps, "css")
-        assert 'href="/static/test.css"' in css_content
+        assert markup == [str(dep.render()) for dep in deps]
+        assert 'type="text/x-scss"' in markup[0]
 
-        js_deps = [Script(url="/static/test.js", attrs={"defer": True})]
-        js_content = _build_compressor_content(js_deps, "js")
-        assert 'src="/static/test.js"' in js_content
-        assert "defer" in js_content
+
+class TestPageWideBundle:
+    """One response's assets, as one file."""
+
+    @pytest.fixture
+    def scss_pair(self, component):
+        component(
+            "<div>a</div>",
+            name="bundle-a",
+            css=".a { color: red; &.nested { color: blue } }",
+            css_type="text/x-scss",
+        )
+        component(
+            "<div>b</div>",
+            name="bundle-b",
+            css=".b { color: green; &.nested { color: teal } }",
+            css_type="text/x-scss",
+        )
+
+    @pytest.mark.usefixtures("compressor_enabled", "scss_pair")
+    def test_two_regions_bundle_into_one_file(self, render_django):
+        """The reason this hook exists.
+
+        `on_dependencies` fires while one region is being serialized and can
+        see no further, so two regions holding different components compress
+        to two files however little is in them. The page sees both.
+        """
+        html = render_django("<head><c-css /></head><body><c-bundle-a />x<c-bundle-b /></body>")
+
+        assert len(link_tags(html)) == 1
+        assert "CACHE/css" in html
+
+    @pytest.mark.usefixtures("compressor_enabled", "scss_pair")
+    def test_the_same_components_make_one_file_whatever_their_order(self, render_django):
+        """A compressed file is named after its own bytes.
+
+        Components arrive in whatever order a page reaches them, so without a
+        canonical order two pages placing the same components differently write
+        two files with identical contents, and a visitor moving between them
+        downloads both.
+        """
+        first = render_django("<head><c-css /></head><body><c-bundle-a />x<c-bundle-b /></body>")
+        second = render_django("<head><c-css /></head><body><c-bundle-b />x<c-bundle-a /></body>")
+
+        assert link_tags(first) == link_tags(second)
+
+    @pytest.mark.usefixtures("compressor_enabled", "scss_pair")
+    def test_without_a_placeholder_the_region_files_stand(self, render_django):
+        """Bundling needs somewhere to put the result.
+
+        A page that named no spot for its stylesheets keeps what its regions
+        made, where they made it, and nothing is left saying they could have
+        been bundled.
+        """
+        html = render_django("<body><c-bundle-a />x<c-bundle-b /></body>")
+
+        assert len(link_tags(html)) == 2
+        assert "data-citry-bundle" not in html
+
+
+class TestWhatIsBundled:
+    """Which of a component's assets django-compressor is offered."""
+
+    @pytest.fixture
+    def kinds(self, component):
+        """One component per way of declaring an asset."""
+        from citry.ext.dependencies import Script
+        from django.templatetags.static import static
+
+        component("<div>inline</div>", name="kind-inline", js="console.log('inline')")
+        component(
+            "<div>file</div>",
+            name="kind-file",
+            Dependencies=type("Dependencies", (), {"js": [Script(url=static("file-callback.js"))]}),
+        )
+        component(
+            "<div>extern</div>",
+            name="kind-extern",
+            Dependencies=type(
+                "Dependencies", (), {"js": [Script(url="https://cdn.example.com/lib.js")]}
+            ),
+        )
+        component("<section><c-kind-inline /><c-kind-file /></section>", name="kind-nested")
+
+    @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    def test_inline_and_static_assets_are_bundled(self, render_django):
+        """Both ways of declaring an asset end up in a file of ours."""
+        inline = render_django("<body><c-kind-inline /><c-js /></body>")
+        from_file = render_django("<body><c-kind-file /><c-js /></body>")
+
+        assert "CACHE/js" in inline
+        assert "CACHE/js" in from_file
+
+    @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    def test_an_asset_it_does_not_serve_is_left_alone(self, render_django):
+        """A CDN script is not django-compressor's to read.
+
+        Offering it one ends the whole response with `UncompressableFileError`,
+        since a URL outside `COMPRESS_URL` is one it refuses outright.
+        """
+        html = render_django("<body><c-kind-extern /><c-js /></body>")
+
+        assert 'src="https://cdn.example.com/lib.js"' in html
+        assert "CACHE/js" not in html
+
+    @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    def test_three_regions_of_mixed_assets_bundle_once(self, render_django):
+        """Nested, repeated, and unbundleable, on one page.
+
+        The bundle takes the position of the first tag it swallowed and what it
+        could not read keeps its own place after it.
+        """
+        html = render_django(
+            "<body><c-kind-nested />x<c-kind-extern />y<c-kind-inline /><c-js /></body>"
+        )
+
+        assert len(script_src_tags(html)) == 2
+        assert len([tag for tag in script_src_tags(html) if "CACHE/js" in tag]) == 1
+        assert 'src="https://cdn.example.com/lib.js"' in html
