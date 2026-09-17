@@ -358,50 +358,121 @@ dict, which is the kind of thing an admin does more often than it sounds.
 
 ### Declaring what a component needs
 
-A component declares its assets with Citry's `Dependencies` class. `styles()`
-and `scripts()` turn the static paths a project already writes into what Citry
-wants:
+Two ways, and they are not interchangeable. One is the component's own code;
+the other is code it merely depends on.
+
+| | `css` / `css_file` / `js` / `js_file` | `Dependencies` |
+|---|---|---|
+| What it is for | The component's own stylesheet and behaviour | A charting library, a shared theme, a vendored script |
+| How it arrives | Citry reads the file and hands over its contents | A URL the browser fetches |
+| Where the file may live | Anywhere Citry's `dirs` reach, so beside the component | Anywhere staticfiles reaches |
+| `css_data()` / `js_data()` | Feeds them | Does nothing |
+| `$component(...)` | Registered, and the client runtime is shipped | Not registered |
+| Read from disk | Once per class, then cached | Never: the browser fetches it |
+
+#### The component's own
 
 ```python
-from citry import Component
+class Slider(Component):
+    css_file = "slider/slider.scss"
+    js_file = "slider/slider.js"
+
+    def css_data(self, kwargs, slots):
+        return {"accent": kwargs.accent}
+
+    def js_data(self, kwargs, slots):
+        return {"slides": len(kwargs.images)}
+```
+
+Citry reads both files against its `dirs` and hands the contents to the
+render, so `styles()` and staticfiles are not involved. What you get back is
+what makes this worth reaching for: `css_data()` becomes custom properties
+scoped to this instance's elements, `js_data()` reaches the `$component`
+callback as its `data`, and Citry ships the client runtime because it can see
+that the component asked for one.
+
+The contents arrive as a dependency like any other, so
+[citry-django-compressor](#one-file-for-a-whole-response) compiles and bundles
+them into one file. Without it they are written inline into every page, which
+also means a `.scss` reaches the browser uncompiled.
+
+#### Code the component does not own
+
+```python
 from citry_django import scripts, styles
 
 
-class Card(Component):
+class Slider(Component):
     class Dependencies:
-        css = styles(["card/card.css"])
-        js = scripts(["card/card.js"])
+        css = styles(["vendor/swiper.css"])
+        js = scripts(["vendor/swiper.js"])
 ```
 
-Both accept a path or a list of them, and take extra attributes as keywords, so
-a project can keep its paths in constants and write the tag's own attributes
-where it names them:
+`styles()` and `scripts()` turn the static paths a project already writes into
+what Citry wants. Both accept a path or a list of them, and take extra
+attributes as keywords, so a project can keep its paths in constants and write
+the tag's own attributes where it names them:
 
 ```python
 css = styles(Css.CARD, Css.GRID, media="screen")
 ```
 
-`media` is the HTML attribute: it lands on the `<link>` as
-`media="screen"`, so the browser skips that stylesheet when printing. Anything
-else you pass is written out the same way.
+`media` is the HTML attribute: it lands on the `<link>` as `media="screen"`, so
+the browser skips that stylesheet when printing. Anything else you pass is
+written out the same way.
+
+What comes out is a `<script src>` or a `<link href>`, the same as writing one
+in a template by hand. No registration, no per-render data, and the browser
+caches it on its own.
 
 They live in `citry_django` and know nothing about compression. Without the
 compressor extension they are plain static URLs.
 
 ### Where those files live
 
-Nowhere special. A component's stylesheet is an ordinary static file:
+Beside the component, either way:
 
 ```
-myapp/static/card/card.css
+components/slider/slider.py
+components/slider/slider.scss
+components/slider/slider.js
 ```
 
-`styles()` calls Django's own `static()`, so the URL follows `STATIC_URL` and
-whatever storage you configured. In development the staticfiles finders read it
-straight from the app. In production `collectstatic` gathers it like any other
-static file, and django-compressor reads from `COMPRESS_ROOT` (your
-`STATIC_ROOT` unless you say otherwise) and writes its output under `CACHE/`,
-which `compressor.finders.CompressorFinder` then serves and collects.
+For `css_file` and `js_file` that is all it takes: Citry resolves the path
+against its own `dirs` and reads the file itself, so staticfiles never sees
+it.
+
+A `Dependencies` entry is a URL, so Django has to be able to find the file
+too. `ComponentFinder` serves those same `dirs` to staticfiles:
+
+```python
+# settings.py
+STATICFILES_FINDERS = [
+    "django.contrib.staticfiles.finders.FileSystemFinder",
+    "django.contrib.staticfiles.finders.AppDirectoriesFinder",
+    # Before CompressorFinder, so a component's own file wins over a copy an
+    # earlier `collectstatic` left behind.
+    "citry_django.finders.ComponentFinder",
+    "compressor.finders.CompressorFinder",
+]
+```
+
+One list of directories, so the two cannot drift apart: what Citry resolves is
+what Django finds, what `collectstatic` collects, and what django-compressor
+reads. Nothing in the compressor package knows about components; it reads a
+static file like any other.
+
+Only assets leave those directories. A component's `.py` and its `.html` are
+not static files, and a component directory is the one place where they sit
+beside ones that are. `ComponentFinder.served` is the set of suffixes, and
+`is_served()` the rule it feeds; subclass to change either.
+
+An ordinary `myapp/static/card/card.css` keeps working as it always did, with
+no finder involved. `styles()` calls Django's own `static()` either way, so the
+URL follows `STATIC_URL` and whatever storage you configured. In production
+`collectstatic` gathers both, and django-compressor reads from `COMPRESS_ROOT`
+(your `STATIC_ROOT` unless you say otherwise) and writes its output under
+`CACHE/`, which `compressor.finders.CompressorFinder` then serves and collects.
 
 This covers the assets Citry collects, and only those. A Django template that
 asks for its own CSS is not Citry's to see, and a `{% compress %}` block around
@@ -429,6 +500,50 @@ The mimetype is an arbitrary string that has to match your
 `COMPRESS_PRECOMPILERS` entry exactly, so nothing is assumed: without the
 mapping a `.scss` arrives as source and leaves as source. An asset that names
 its own `type` always wins.
+
+A `css_file` is covered by the same mapping, though it has no URL to read a
+suffix from: it arrives as contents. The component knows what it declared, and
+the extension asks it.
+
+#### With `css_data()`
+
+The two happen at different times and do not get in each other's way:
+
+```python
+class Badge(Component):
+    css_file = "badge/badge.scss"
+
+    def css_data(self, kwargs, slots):
+        return {"accent": kwargs.accent}
+```
+
+```scss
+.badge {
+    color: var(--accent);
+
+    &-label { border: 1px solid var(--accent); }
+}
+```
+
+Sass runs on the server and resolves the nesting; a custom property is
+resolved by the browser, so `var(--accent)` passes through the precompiler
+untouched. What comes out is one compiled file for the rules and a small
+`<style>` per distinct set of values.
+
+What you cannot do is reach a value from `css_data()` while Sass is running.
+`darken(var(--accent), 10%)` has nothing to darken: at compile time that value
+does not exist yet. The same goes for anything that is not a CSS *value*. A
+custom property may stand where a value may stand, so it cannot pick a
+selector, drive a `@media` query, or feed an `@each`.
+
+Values are strings, finite numbers, or `None`. A dict or a list is refused,
+which is worth knowing if you were hoping to hand over a Sass map: pass
+several properties instead, or move it to `js_data()`, which takes arbitrary
+JSON.
+
+Anything that shapes the CSS itself, rather than filling in a value, belongs
+in the stylesheet or in a Sass function, where it is compiled once into the
+shared file.
 
 ### One file for a whole response
 
@@ -459,10 +574,7 @@ Citry serves its client runtime itself. Mount it, or it has nowhere to point a
 # urls.py
 from citry_django.urls import urlpatterns as citry_urls
 
-urlpatterns = [
-    *citry_urls(app, "/citry"),
-    ...
-]
+urlpatterns = [*citry_urls(app, "/citry"), ...]
 ```
 
 That wraps Citry's own Django routes and prepares each response the way a web

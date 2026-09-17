@@ -176,14 +176,13 @@ class Compression:
     def precompiles(self, dep: Script | Style) -> bool:
         """Whether django-compressor has a precompiler to run over `dep`.
 
-        Keyed on the asset's own ``type``, or on the one
-        `CITRY_COMPRESSOR_FILE_TYPES` gives its suffix, because that attribute
-        is the only thing django-compressor keys them on. An asset that names
-        neither arrives as source and leaves as source, exactly as a
-        `<link href="x.scss">` with no ``type`` would inside a
-        ``{% compress %}`` block.
+        Keyed on the asset's own ``type``, because that attribute is the only
+        thing django-compressor keys them on. One that names none arrives as
+        source and leaves as source, exactly as a `<link href="x.scss">`
+        without one would inside a ``{% compress %}`` block. The extension
+        writes that attribute before this is asked; see `typed()` there.
         """
-        declared = self.typed(dep).attrs.get("type")
+        declared = dep.attrs.get("type")
         return bool(declared) and declared in dict(settings.COMPRESS_PRECOMPILERS)
 
     def dependencies(self, deps: list[Any], kind: Kind) -> list[Any]:
@@ -222,32 +221,10 @@ class Compression:
         cache_set(key, assets)
         return assets
 
-    def markup(self, deps: list[Any]) -> list[str]:
-        """`deps` as the tags Citry would have written for them."""
-        return [str(self.typed(dep).render()) for dep in deps]
-
-    def typed(self, dep: Any) -> Any:
-        """`dep`, saying what compiles it when the project mapped its suffix.
-
-        An asset's own ``type`` always wins. `CITRY_COMPRESSOR_FILE_TYPES` is
-        for the rest, so a project spells the mapping once instead of at every
-        call site, and one call can name a `.css` and a `.scss` together.
-        """
-        if dep.attrs.get("type") or not dep.url:
-            return dep
-        suffix = PurePosixPath(dep.url).suffix.lower()
-        mimetype = self.file_types().get(suffix)
-        return dep if mimetype is None else replace(dep, attrs={**dep.attrs, "type": mimetype})
-
     @staticmethod
-    def file_types() -> dict[str, str]:
-        """Suffix to the mimetype this project compiles it under.
-
-        Empty unless the project says otherwise: which suffixes it compiles,
-        and under which of its own `COMPRESS_PRECOMPILERS` names, is not this
-        package's to guess.
-        """
-        return dict(getattr(settings, "CITRY_COMPRESSOR_FILE_TYPES", {}))
+    def markup(deps: list[Any]) -> list[str]:
+        """`deps` as the tags Citry would have written for them."""
+        return [str(dep.render()) for dep in deps]
 
 
 class CitryCompressorExtension(Extension):
@@ -302,12 +279,61 @@ class CitryCompressorExtension(Extension):
 
     def replaced(self, deps: list[Any], kind: Kind) -> list[Any]:
         """`deps` with the ones worth compressing swapped for what came back."""
-        ours = [dep for dep in deps if self.shareable(dep) and self.compression.reads(dep)]
+        typed = [self.typed(dep) for dep in deps]
+        ours = [dep for dep in typed if self.shareable(dep) and self.compression.reads(dep)]
         if not ours:
-            return deps
-        untouched = [dep for dep in deps if dep not in ours]
+            return typed
+        untouched = [dep for dep in typed if dep not in ours]
         compressed = self.compression.dependencies(ours, kind)
         return untouched + [self.marked(dep) for dep in compressed]
+
+    def typed(self, dep: Any) -> Any:
+        """`dep`, saying what compiles it, when the project mapped its suffix.
+
+        An asset's own ``type`` always wins. `CITRY_COMPRESSOR_FILE_TYPES` is
+        for the rest, so a project spells the mapping once instead of at every
+        call site, and one call can name a `.css` and a `.scss` together.
+        """
+        if dep.attrs.get("type"):
+            return dep
+        mimetype = self.file_types().get(self.suffix_of(dep))
+        return dep if mimetype is None else replace(dep, attrs={**dep.attrs, "type": mimetype})
+
+    def suffix_of(self, dep: Any) -> str:
+        """The suffix of the file this asset came from, as far as it is known.
+
+        A `Dependencies` entry is a URL and says so itself. A ``css_file`` or
+        ``js_file`` arrives as contents with no URL at all, so the suffix is
+        the component's to answer: `origin_class_id` names the class, and
+        Citry looks it up.
+        """
+        url = getattr(dep, "url", None)
+        if url:
+            return PurePosixPath(url).suffix.lower()
+        declared = self.declared_file(dep)
+        return PurePosixPath(declared).suffix.lower() if declared else ""
+
+    def declared_file(self, dep: Any) -> str | None:
+        """What the component this asset came from named as its file."""
+        class_id = getattr(dep, "origin_class_id", None)
+        if class_id is None:
+            return None
+        try:
+            component = self.citry.get_component_by_class_id(class_id)
+        except KeyError:
+            return None
+        attribute = "css_file" if isinstance(dep, Style) else "js_file"
+        return getattr(component, attribute, None)
+
+    @staticmethod
+    def file_types() -> dict[str, str]:
+        """Suffix to the mimetype this project compiles it under.
+
+        Empty unless the project says otherwise: which suffixes it compiles,
+        and under which of its own `COMPRESS_PRECOMPILERS` names, is not this
+        package's to guess.
+        """
+        return dict(getattr(settings, "CITRY_COMPRESSOR_FILE_TYPES", {}))
 
     def shareable(self, dep: Script | Style) -> bool:
         """Whether this asset is the same on every page placing the component.

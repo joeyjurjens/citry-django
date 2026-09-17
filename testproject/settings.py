@@ -121,6 +121,9 @@ STATICFILES_DIRS = [BASE_DIR / "static"]
 STATICFILES_FINDERS = [
     "django.contrib.staticfiles.finders.FileSystemFinder",
     "django.contrib.staticfiles.finders.AppDirectoriesFinder",
+    # Before CompressorFinder, so a component's own file wins over a copy an
+    # earlier `collectstatic` left in COMPRESS_ROOT.
+    "citry_django.finders.ComponentFinder",
     "compressor.finders.CompressorFinder",
 ]
 

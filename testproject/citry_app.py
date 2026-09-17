@@ -2,6 +2,7 @@ import citry_ui
 from citry import Citry, Component
 from citry.ext.dependencies import Style
 from citry_django_djc import tokenize as djc_tokenize
+from django.conf import settings
 from django.templatetags.static import static
 
 from citry_django import CitryDjangoExtension
@@ -20,6 +21,10 @@ app = Citry(
     ],
     # Citry's expression sandbox exposes no builtins unless you hand them over.
     template_globals={"len": len},
+    # Where a component's asset files are resolved from. `ComponentFinder`
+    # serves these same directories, so what Citry resolves is what Django
+    # finds and `collectstatic` collects.
+    dirs=[settings.BASE_DIR / "components"],
 )
 app.register_library(citry_ui)
 

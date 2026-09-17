@@ -1,6 +1,8 @@
 import re
+from pathlib import Path
 
 import pytest
+from django.conf import settings
 from django.template import Context, engines
 
 
@@ -266,9 +268,8 @@ class TestWhatCompressorIsOffered:
         settings.CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
         plain, sass = Style(url="/static/a.css"), Style(url="/static/b.scss")
 
-        assert not self.compression().precompiles(plain)
-        assert self.compression().precompiles(sass)
-        assert 'type="text/x-scss"' in self.compression().markup([sass])[0]
+        assert extension().typed(plain).attrs.get("type") is None
+        assert extension().typed(sass).attrs["type"] == "text/x-scss"
 
     def test_a_declared_type_wins_over_the_mapping(self, settings):
         from citry.ext.dependencies import Style
@@ -276,7 +277,7 @@ class TestWhatCompressorIsOffered:
         settings.CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
         declared = Style(url="/static/b.scss", attrs={"type": "text/plain"})
 
-        assert 'type="text/plain"' in self.compression().markup([declared])[0]
+        assert extension().typed(declared).attrs["type"] == "text/plain"
 
     def test_a_suffix_alone_says_nothing(self):
         """Without that mapping, a `.scss` is source and stays source.
@@ -287,7 +288,7 @@ class TestWhatCompressorIsOffered:
         """
         from citry.ext.dependencies import Style
 
-        assert not self.compression().precompiles(Style(url="/static/a.scss"))
+        assert extension().typed(Style(url="/static/a.scss")).attrs.get("type") is None
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_an_asset_it_does_not_serve_is_out_of_reach(self):
@@ -433,3 +434,125 @@ class TestWhatIsBundled:
         assert len(script_src_tags(html)) == 2
         assert len([tag for tag in script_src_tags(html) if "CACHE/js" in tag]) == 1
         assert 'src="https://cdn.example.com/lib.js"' in html
+
+
+class TestPerInstanceAssets:
+    """What must never reach a shared file."""
+
+    @pytest.fixture
+    def product(self, component):
+        """A component whose look and data differ per instance."""
+        component(
+            '<article class="product">{{ name }}</article>',
+            name="bundle-product",
+            css=".product { color: var(--accent) }",
+            js="$component((el) => el)",
+            Kwargs=type("Kwargs", (), {"__annotations__": {"pk": int, "accent": str}}),
+            template_data=lambda self, kwargs, slots: {"name": f"p{kwargs.pk}"},
+            css_data=lambda self, kwargs, slots: {"accent": kwargs.accent},
+            js_data=lambda self, kwargs, slots: {"pk": kwargs.pk},
+        )
+
+    @staticmethod
+    def catalogue(count):
+        products = "".join(
+            f'<c-bundle-product c-pk="{pk}" c-accent="\'#00000{pk}\'" />'
+            for pk in range(1, count + 1)
+        )
+        return f"<head><c-css /></head><body>{products}<c-js /></body>"
+
+    @staticmethod
+    def bundles(html):
+        return set(re.findall(r"/static/CACHE/[a-z]+/[a-f0-9]+\.[a-z]+", html))
+
+    @pytest.mark.usefixtures("compressor_enabled", "product")
+    def test_many_instances_do_not_make_many_files(self, render_django):
+        """A catalogue has 200k products; it does not have 200k stylesheets.
+
+        Citry splits a component's assets in two. What it declares is the same
+        for every instance and worth sharing; what `css_data()` and
+        `js_data()` return belongs to one render. `shareable()` only offers
+        the first kind, so a primary key can never name a file.
+        """
+        html = render_django(self.catalogue(5))
+
+        assert len(self.bundles(html)) == 2
+
+    @pytest.mark.usefixtures("compressor_enabled", "product")
+    def test_instances_that_look_alike_share_one_block(self, render_django):
+        """Where the page's deduplication meets Citry's scoping.
+
+        The page drops a tag it has placed already, by its exact markup. Citry
+        names these blocks after the data in them and puts the same name on
+        the element, so two instances with the same data are one block that
+        both elements point at, and dropping the second is right rather than
+        lucky.
+        """
+        html = render_django(
+            "<head><c-css /></head><body>"
+            '<c-bundle-product c-pk="1" c-accent="\'#aaaaaa\'" />'
+            '<c-bundle-product c-pk="2" c-accent="\'#bbbbbb\'" />'
+            '<c-bundle-product c-pk="3" c-accent="\'#aaaaaa\'" />'
+            "<c-js /></body>"
+        )
+        blocks = re.findall(r"\[data-ccss-([a-f0-9]+)\]", html)
+        elements = re.findall(r'data-ccss-([a-f0-9]+)=""', html)
+
+        assert len(blocks) == 2
+        assert len(elements) == 3
+        assert set(elements) == set(blocks)
+
+    @pytest.mark.usefixtures("compressor_enabled", "product")
+    def test_what_belongs_to_one_render_stays_in_the_page(self, render_django):
+        """Bundling it would put one page's data in a file meant to be shared,
+        and give every page a file of its own."""
+        html = render_django(self.catalogue(3))
+
+        assert html.count("--accent") == 3
+
+
+class TestCompilingAComponentsOwnFile:
+    """A `css_file` arrives as contents, with no URL to read a suffix from."""
+
+    @pytest.fixture
+    def badge(self, component, settings):
+        settings.CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
+        component(
+            '<span class="badge"><b class="badge-label">x</b></span>',
+            name="scss-badge",
+            css_file="badge/badge.scss",
+            Kwargs=type("Kwargs", (), {"__annotations__": {"accent": str}}),
+            css_data=lambda self, kwargs, slots: {"accent": kwargs.accent},
+        )
+
+    @pytest.mark.usefixtures("compressor_enabled", "badge")
+    def test_it_is_compiled(self, render_django):
+        """django-compressor picks its precompiler on the `type` attribute, and
+        a `css_file` carries neither that nor a URL to read a suffix from. The
+        component knows: `origin_class_id` names the class, Citry looks it up,
+        and what it declared as `css_file` says what the file is. Without that
+        the Sass reaches the browser as source.
+        """
+        html = render_django(
+            "<head><c-css /></head><body><c-scss-badge c-accent=\"'#ff0000'\" /></body>"
+        )
+        compiled = Path(settings.COMPRESS_ROOT) / re.search(
+            r"CACHE/css/([a-f0-9]+\.css)", html
+        ).group(0)
+
+        assert "&-label" not in compiled.read_text()
+        assert ".badge-label" in compiled.read_text()
+
+    @pytest.mark.usefixtures("compressor_enabled", "badge")
+    def test_its_variables_still_reach_the_page(self, render_django):
+        """Compiling happens server-side and a custom property is resolved by
+        the browser, so the two do not get in each other's way."""
+        html = render_django(
+            "<head><c-css /></head><body>"
+            "<c-scss-badge c-accent=\"'#ff0000'\" />"
+            "<c-scss-badge c-accent=\"'#00ff00'\" />"
+            "</body>"
+        )
+
+        assert "--accent: #ff0000" in html
+        assert "--accent: #00ff00" in html
