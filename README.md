@@ -556,9 +556,10 @@ from citry_django_compressor import CitryCompressorExtension
 app = Citry(extensions=[CitryDjangoExtension(), CitryCompressorExtension()])
 ```
 
-Without a spot to put it, each region keeps the file it made: bundling a whole
+Without a spot to put it, each region gets a file of its own: bundling a whole
 response needs somewhere to put the result, and putting it where you did not
-ask for it would be worse than not making one.
+ask for it would be worse than not making one. Either way the page drops the
+repeats first, so a stylesheet two regions both asked for is compiled once.
 
 Any extension can do the same. The page emits `on_page_assets` once per group
 with the whole response's tags, and what it returns is what gets placed.

@@ -71,7 +71,7 @@ CitryCompressorExtension(force=lambda: getattr(get_current_request(), "is_previe
 
 ## Limitations
 
-Bundling a whole response needs somewhere to put the result, so a base template that writes no `<c-css />` or `<c-js />` keeps one compressed file per `<c-*>` region: the assets stay where Citry put them, and putting a bundle somewhere you did not ask for it would be worse than not making one.
+Bundling a whole response needs somewhere to put the result, so a base template that writes no `<c-css />` or `<c-js />` gets one compressed file per `<c-*>` region instead: the assets stay where Citry put them, and putting a bundle somewhere you did not ask for it would be worse than not making one. Repeats are still dropped first, so a stylesheet two regions both asked for is compiled once either way.
 
 ## License
 

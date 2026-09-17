@@ -60,6 +60,13 @@ def script_src_tags(html):
     return re.findall(r'<script[^>]*src="[^"]+"[^>]*>', html, re.S)
 
 
+def bundle_body(html):
+    """What django-compressor wrote for the one stylesheet this page links."""
+    (href,) = re.findall(r'<link[^>]*rel="stylesheet"[^>]*href="([^"]+)"', html)
+    path = href[len(str(settings.COMPRESS_URL)) :]
+    return (Path(settings.COMPRESS_ROOT) / path).read_text()
+
+
 def extension():
     """The extension, for the two methods a test exercises directly."""
     from citry_django_compressor import CitryCompressorExtension
@@ -290,6 +297,19 @@ class TestWhatCompressorIsOffered:
 
         assert extension().typed(Style(url="/static/a.scss")).attrs.get("type") is None
 
+    def test_a_cache_busting_query_does_not_hide_the_suffix(self, settings):
+        """django-compressor drops one before it resolves the file.
+
+        Reading the suffix off the whole URL would see `.scss?v=2`, match no
+        mimetype, and leave the SCSS to reach the browser as SCSS.
+        """
+        from citry.ext.dependencies import Style
+
+        settings.CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
+
+        for url in ("/static/b.scss?v=2", "/static/b.scss#top", "/static/b.scss?v=2#top"):
+            assert extension().typed(Style(url=url)).attrs["type"] == "text/x-scss", url
+
     @pytest.mark.usefixtures("compressor_enabled")
     def test_an_asset_it_does_not_serve_is_out_of_reach(self):
         from citry.ext.dependencies import Script
@@ -362,17 +382,41 @@ class TestPageWideBundle:
         assert link_tags(first) == link_tags(second)
 
     @pytest.mark.usefixtures("compressor_enabled", "scss_pair")
-    def test_without_a_placeholder_the_region_files_stand(self, render_django):
+    def test_without_a_placeholder_each_region_keeps_its_own_file(self, render_django):
         """Bundling needs somewhere to put the result.
 
-        A page that named no spot for its stylesheets keeps what its regions
-        made, where they made it, and nothing is left saying they could have
-        been bundled.
+        A page that named no spot for its stylesheets leaves each group where
+        Citry put it, so there is one file per region and nothing is left
+        saying they could have been one.
         """
         html = render_django("<body><c-bundle-a />x<c-bundle-b /></body>")
 
         assert len(link_tags(html)) == 2
         assert "data-citry-bundle" not in html
+
+    @pytest.mark.usefixtures("compressor_enabled")
+    def test_one_stylesheet_two_regions_is_one_copy(self, render_django, component):
+        """The page drops the repeat before django-compressor ever sees it.
+
+        A region that compressed for itself would hand the page a URL of its
+        own, and two such URLs holding identical bytes are two different tags.
+        Nothing downstream can tell them apart, so both would go in the file.
+        """
+        from citry.ext.dependencies import Style
+        from django.templatetags.static import static
+
+        shared = type(
+            "Dependencies",
+            (),
+            {"css": [Style(url=static("test.scss"), attrs={"type": "text/x-scss"})]},
+        )
+        component("<div>x</div>", name="shared-x", Dependencies=shared)
+        component("<div>y</div>", name="shared-y", Dependencies=shared)
+
+        html = render_django("<head><c-css /></head><body><c-shared-x /><c-shared-y /></body>")
+
+        assert len(link_tags(html)) == 1
+        assert bundle_body(html).count(".scss-file-test") == 1
 
 
 class TestWhatIsBundled:

@@ -265,27 +265,33 @@ class CitryCompressorExtension(Extension):
         region and a bundle per response: two regions holding different
         components compress to two files however little is in them, because
         neither render can see the other.
-
-        Bundling needs somewhere to put the result, so a page that named no
-        spot for this group keeps the files its regions made, and the marks
-        that said they could still be bundled come off.
         """
         mine = [tag for tag in asset.tags if BUNDLE_ATTR in tag]
         if not mine:
             return asset.tags
-        if not asset.collected:
-            return tuple(self.unmarked(tag) for tag in asset.tags)
         return self.bundled(Kind(str(asset.kind)), asset.tags, mine)
 
     def replaced(self, deps: list[Any], kind: Kind) -> list[Any]:
-        """`deps` with the ones worth compressing swapped for what came back."""
+        """`deps` with the ones worth compressing handled, now or by the page.
+
+        A page compresses for itself, and waiting for it is what keeps the
+        result free of repeats. Two regions placing the same stylesheet each
+        compress to a file of their own, and those two files are two different
+        URLs, so nothing downstream can tell they hold the same bytes. Left
+        alone, the two tags are the same tag, the page drops one, and what
+        finally goes to django-compressor is each stylesheet once.
+
+        Without a page there is nothing to wait for, and a region compresses
+        what it holds the way it always did.
+        """
         typed = [self.typed(dep) for dep in deps]
         ours = [dep for dep in typed if self.shareable(dep) and self.compression.reads(dep)]
         if not ours:
             return typed
+        if current_page.get() is not None:
+            return [self.marked(dep) if dep in ours else dep for dep in typed]
         untouched = [dep for dep in typed if dep not in ours]
-        compressed = self.compression.dependencies(ours, kind)
-        return untouched + [self.marked(dep) for dep in compressed]
+        return untouched + self.compression.dependencies(ours, kind)
 
     def typed(self, dep: Any) -> Any:
         """`dep`, saying what compiles it, when the project mapped its suffix.
@@ -309,9 +315,21 @@ class CitryCompressorExtension(Extension):
         """
         url = getattr(dep, "url", None)
         if url:
-            return PurePosixPath(url).suffix.lower()
+            return self.suffix(url)
         declared = self.declared_file(dep)
-        return PurePosixPath(declared).suffix.lower() if declared else ""
+        return self.suffix(declared) if declared else ""
+
+    @staticmethod
+    def suffix(path: str) -> str:
+        """`path`'s suffix, without a query or fragment.
+
+        django-compressor drops a querystring before it resolves a file, so a
+        URL carrying one compiles fine there. Reading the suffix off the whole
+        string would see `.scss?v=2`, match no mimetype, and leave the SCSS to
+        reach the browser as SCSS.
+        """
+        bare = path.split("?", 1)[0].split("#", 1)[0]
+        return PurePosixPath(bare).suffix.lower()
 
     def declared_file(self, dep: Any) -> str | None:
         """What the component this asset came from named as its file."""
@@ -366,7 +384,8 @@ class CitryCompressorExtension(Extension):
         `sort=False` keeps the order the page has them in, for a project whose
         component stylesheets rely on it.
         """
-        replacement = self.compression.tags(sorted(mine) if self.sort else mine, kind)
+        theirs = [self.unmarked(tag) for tag in mine]
+        replacement = self.compression.tags(sorted(theirs) if self.sort else theirs, kind)
         placed: list[str] = []
         for tag in tags:
             if BUNDLE_ATTR not in tag:
@@ -378,11 +397,10 @@ class CitryCompressorExtension(Extension):
 
     @staticmethod
     def marked(dep: Any) -> Any:
-        """`dep`, saying the page may still bundle it, while there is a page."""
-        if current_page.get() is None:
-            return dep
+        """`dep`, saying the page still has this one to compress."""
         return replace(dep, attrs={**dep.attrs, BUNDLE_ATTR: ""})
 
     @staticmethod
     def unmarked(tag: str) -> str:
+        """`tag` without the mark, which was never the page's to hand on."""
         return tag.replace(f' {BUNDLE_ATTR}=""', "").replace(f" {BUNDLE_ATTR}", "")
