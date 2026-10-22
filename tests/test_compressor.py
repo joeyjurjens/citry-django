@@ -2,8 +2,11 @@ import re
 from pathlib import Path
 
 import pytest
+from compressor.css import CssCompressor
 from django.conf import settings
 from django.template import Context, engines
+
+from citry_django_compressor import GROUPS, Kind, collecting
 
 
 @pytest.fixture
@@ -602,3 +605,24 @@ class TestCompilingAComponentsOwnFile:
 
         assert "--accent: #ff0000" in html
         assert "--accent: #00ff00" in html
+
+
+class NamedCssCompressor(CssCompressor):
+    """A project's own compressor, as `COMPRESSORS` would name it."""
+
+
+class TestTheConfiguredCompressor:
+    def test_the_default_is_used_as_it_is(self):
+        assert collecting(Kind.CSS) is GROUPS[Kind.CSS][0]
+
+    def test_a_configured_class_is_built_on(self, settings):
+        settings.COMPRESSORS = {
+            "css": f"{__name__}.NamedCssCompressor",
+            "js": "compressor.js.JsCompressor",
+        }
+
+        built = collecting(Kind.CSS)
+
+        assert issubclass(built, NamedCssCompressor)
+        assert issubclass(built, GROUPS[Kind.CSS][0])
+        assert collecting(Kind.CSS) is built

@@ -48,6 +48,8 @@ COMPRESS_PRECOMPILERS = (("text/x-scss", "django_libsass.SassCompiler"),)
 STATICFILES_FINDERS = [..., "compressor.finders.CompressorFinder"]
 ```
 
+A compressor class named in `COMPRESSORS` is used here too, the same one a `{% compress %}` block uses, so a project that names its output files its own way gets that for component assets as well.
+
 There is no setting here at all. What compiles an asset is the asset's own `type`, written the way you would write it in a template:
 
 ```python

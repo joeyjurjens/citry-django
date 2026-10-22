@@ -9,8 +9,10 @@ from typing import Any
 from citry.ext.dependencies import Script, Style
 from citry.extension import Extension
 from compressor.cache import cache_get, cache_set, get_templatetag_cachekey
+from compressor.conf import settings as compressor_settings
 from compressor.css import CssCompressor
 from compressor.js import JsCompressor
+from compressor.utils import get_class
 from django.conf import settings
 
 from citry_django.compat import StrEnum
@@ -122,6 +124,26 @@ GROUPS: dict[Kind, tuple[type[Collecting], Any]] = {
     Kind.JS: (CollectingJs, partial(Script, wrap=False)),
 }
 
+#: ``{(kind, configured class): collecting class}``, built once per pair.
+_COLLECTING: dict[tuple[Kind, type], type[Collecting]] = {}
+
+
+def collecting(kind: Kind) -> type[Collecting]:
+    """The compressor for `kind`, built on the class ``COMPRESSORS`` names.
+
+    The same class a ``{% compress %}`` block uses, so a project that configures
+    its own compressor, to name its output files for instance, gets it for the
+    files written here as well.
+    """
+    base = GROUPS[kind][0]
+    configured = get_class(compressor_settings.COMPRESSORS[kind.value])
+    if issubclass(base, configured):
+        return base
+    key = (kind, configured)
+    if key not in _COLLECTING:
+        _COLLECTING[key] = type(base.__name__, (base, configured), {})
+    return _COLLECTING[key]
+
 
 class Compression:
     """django-compressor, handed assets and read back as assets.
@@ -209,7 +231,7 @@ class Compression:
         if not content.strip():
             return []
 
-        compressor = GROUPS[kind][0].over(kind, content)
+        compressor = collecting(kind).over(kind, content)
         if self.forced() or not settings.COMPRESS_ENABLED:
             return compressor.assets(forced=True)
 
