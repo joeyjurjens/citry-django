@@ -71,3 +71,5 @@ select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
 [tool.ruff.lint.per-file-ignores]
 # `content_panels = [...]` is how Wagtail models are written.
 "testproject/**" = ["RUF012"]
+# The replacements have to match Citry's own lines character for character.
+"packages/citry-django/src/citry_django/citry_patch.py" = ["E501"]
