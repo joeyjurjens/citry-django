@@ -41,6 +41,16 @@ BUNDLE_ATTR = "data-citry-bundle"
 BUNDLED_KINDS = frozenset({"component", "extra", "file"})
 
 
+def plain(value: str | None) -> str | None:
+    """`value` as an exact `str`.
+
+    django-compressor hands back Django's `SafeString`, and Citry checks an
+    asset URL with `type(url) is str` before it lets an interactive page load
+    it. `str()` keeps the subclass, since `SafeString.__str__` returns itself.
+    """
+    return None if value is None else "".join([value])
+
+
 @dataclass(frozen=True)
 class Asset:
     """One asset django-compressor produced: a file it wrote, or content."""
@@ -93,7 +103,9 @@ class Collecting:
         self.output(mode=mode, forced=forced)
         return [
             Asset(
-                url=values.get("url"), content=values.get("content"), attrs=self.attrs_for(values)
+                url=plain(values.get("url")),
+                content=plain(values.get("content")),
+                attrs=self.attrs_for(values),
             )
             for values in self.context[self.SINK]
         ]
