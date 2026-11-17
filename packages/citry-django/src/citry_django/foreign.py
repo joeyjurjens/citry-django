@@ -20,7 +20,7 @@ from django.utils.safestring import mark_safe
 
 from .engine import explain_tokenizer_disagreement, get_django_engine
 from .expressions import is_dotted_path
-from .nodes import CitryParser, CitrySegment
+from .nodes import CitryParser, CitrySegment, trusted
 from .registry import get_tokenizer
 
 SEGMENT_MARKER_LABEL = "CiTrY-SeGmEnT"
@@ -98,15 +98,15 @@ class _BlockState:
         cursor = 0
         for start, end, index, was_escaped in sorted(occurrences):
             if start > cursor:
-                parts.append(html[cursor:start])
+                parts.append(trusted(html[cursor:start]))
             rendered = self.renders[index]
             if was_escaped:
-                parts.append(str(escape(rendered.serialize(deps_strategy="ignore"))))
+                parts.append(trusted(escape(rendered.serialize(deps_strategy="ignore"))))
             else:
                 parts.append(rendered)
             cursor = end
         if cursor < len(html):
-            parts.append(html[cursor:])
+            parts.append(trusted(html[cursor:]))
         return CitryRender(parts=parts, context=self.citry_context)
 
     def reject_stale_markers(self, html: str) -> None:

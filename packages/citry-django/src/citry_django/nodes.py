@@ -5,12 +5,26 @@ from typing import Any
 from citry import collect_compiled_body_fills, render_compiled_body
 from django import template
 from django.template.base import Parser
-from django.utils.safestring import mark_safe
+from django.utils.safestring import SafeString, mark_safe
+from markupsafe import Markup
 
 from .context import HOST_PROVIDE, ContextBehavior
 from .engine import get_django_engine
 from .page import prepared
 from .registry import context_behavior, deps_strategy, get_citry_app
+
+
+def trusted(part: Any) -> Any:
+    """`part` as HTML Citry inserts as is, when it is template text.
+
+    Citry builds an interactive page with Vue, which accepts text only in the
+    typed forms Citry's own compiler writes, or as `Markup`. Two kinds of plain
+    `str` reach it from here: what Django rendered around a Citry run, and the
+    template text `render_compiled_body` returns between the Citry tags of a
+    run. Both are markup that a template author wrote or Django already
+    escaped, so they are marked as such. Anything else is left to Citry.
+    """
+    return Markup(part) if type(part) in (str, SafeString) else part
 
 
 class DottedLoop(dict):
@@ -97,6 +111,7 @@ class CitrySegment(template.Node):
             )
             return ""
         rendered = render_compiled_body(body, state.citry_context, variables_overlay=variables)
+        rendered.parts[:] = [trusted(part) for part in rendered.parts]
         return mark_safe(state.retain(rendered))
 
     def __repr__(self) -> str:
