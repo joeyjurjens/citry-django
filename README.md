@@ -24,11 +24,11 @@ changes, so you can migrate one region at a time.
 
 | | |
 |---|---|
-| Python | 3.10 - 3.14 |
+| Python | 3.11 - 3.14 |
 | Django | 5.2 LTS, 6.0, 6.1 |
-| Citry | 0.5.1 or later |
+| Citry | 1.x (1.0.0 or later) |
 
-The suite runs against the newest Citry, currently 0.5.1.
+The suite runs against the newest Citry, currently 1.0.0.
 
 ## Install
 
@@ -351,6 +351,11 @@ Those are Citry's own placeholders. Without them the tags stay where Citry put
 them, still deduplicated. `CITRY_COLLECT_PAGE_ASSETS = False` turns the whole
 thing off.
 
+This covers components that render static HTML. A region with an interactive
+component is a Vue app, and Citry writes its assets right around the app's
+mount point instead, so they stay there; see
+[Interactive regions keep their own assets](#interactive-regions-keep-their-own-assets).
+
 Nothing in the markup refers back to the page that produced it, so a region's
 HTML stands on its own. `{% cache %}` around one works. So does a rendered
 fragment you stored and send back later, and a base template you kept in a
@@ -387,9 +392,10 @@ class Slider(Component):
 Citry reads both files against its `dirs` and hands the contents to the
 render, so `styles()` and staticfiles are not involved. What you get back is
 what makes this worth reaching for: `css_data()` becomes custom properties
-scoped to this instance's elements, `js_data()` reaches the `$component`
-callback as its `data`, and Citry ships the client runtime because it can see
-that the component asked for one.
+scoped to this instance's elements, `js_data()` becomes members of the Vue
+component, read as `this.slides` in Vue Options or `component.slides` in a
+`$component(({ component }) => ...)` callback, and Citry ships the client
+runtime because it can see that the component asked for one.
 
 The contents arrive as a dependency like any other, so
 [citry-django-compressor](#one-file-for-a-whole-response) compiles and bundles
@@ -589,7 +595,7 @@ request.
 Forever is safe because the mount carries a release segment:
 
 ```
-/citry/a1b2c3d4/citry.js
+/citry/a1b2c3d4/citry.<hash>.js
 ```
 
 `Citry.build_url` is the prefix plus the route's path, so a segment in the
@@ -737,6 +743,45 @@ This is not a rule about HTML. A tag and an element may interleave freely:
 {% if a %}<div>{% endif %}</div>              {# renders exactly as plain Django #}
 <div class="{% if a %}on{% endif %}">x</div>  {# fine, an element could not go here #}
 ```
+
+### Interactive regions keep their own assets
+
+A component with its own `js`, or a Vue binding such as `@click`, makes its
+region a Vue app. Citry writes that app's stylesheets and scripts right around
+its mount point and ignores `<c-css />` and `<c-js />`, so for these regions the
+page cannot move the tags to the head, drop a runtime another region already
+placed, or bundle them into one file. Each region still works on its own.
+Mount [Citry's own routes](#citrys-own-routes), or every such region inlines
+the whole client runtime.
+
+This needs a change in Citry.
+
+### Each pass of a Django loop is its own Vue app
+
+```html
+{% for item in items %}<c-like-button c-item="item"/>{% endfor %}
+```
+
+Django renders each pass as its own region, so this is one Vue app per item.
+Components side by side in one region share an app; a loop written in Citry,
+`<c-for>`, stays inside one.
+
+### HTML that crosses a Django block, inside an interactive render
+
+In a region that runs with Vue, the HTML on each side of a Django block must be
+complete on its own:
+
+```html
+{# fine #}
+<ul>{% for item in items %}<li>{{ item }}</li>{% endfor %}</ul>
+
+{# ValueError: not a complete HTML fragment: '<ul>' #}
+<ul>{% for item in items %}<li><c-like-button c-item="item"/></li>{% endfor %}</ul>
+```
+
+The second one opens `<ul>` in Citry's part of the template and closes it after
+Django's loop, with a component inside the loop. Static regions are not
+affected. This needs a change in Citry.
 
 ### `{% extends %}` belongs in a Django template
 

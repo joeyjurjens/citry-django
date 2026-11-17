@@ -31,6 +31,8 @@ Components keep declaring assets [the way Citry documents](https://citry.dev/adv
 
 At serialize time the extension takes the render's final, deduplicated asset lists, feeds them to django-compressor as one CSS group and one JS group, and replaces them with the compressed results. Citry's own runtime scripts are left alone: they are not yours to bundle.
 
+On a page with interactive components (Vue apps), each component's CSS and JS is still compiled and compressed, but stays with its own region: Citry places those assets around the app's mount point, so they are not gathered into one file for the whole response.
+
 Results come from django-compressor's cache where that is allowed, keyed the way the `{% compress %}` tag keys it, on a digest of the content plus the mtimes of its sources. Without that every render recompiles its SCSS from scratch.
 
 ## Citry's dependency strategy
