@@ -9,7 +9,7 @@ from django.templatetags.static import static
 def own(component):
     """A component whose stylesheet and behaviour are its own."""
     component(
-        "<div>slider</div>",
+        '<div ref="slider">slider</div>',
         name="own-slider",
         css_file="details/details.scss",
         js_file="slider/slider.js",
@@ -22,7 +22,7 @@ def own(component):
 def borrowed(component):
     """A component pointing at code it does not own."""
     component(
-        "<div>slider</div>",
+        '<div ref="slider">slider</div>',
         name="borrowed-slider",
         Dependencies=type(
             "Dependencies",
@@ -51,8 +51,8 @@ class TestItsOwn:
         which is the whole reason to keep the file here rather than link it."""
         html = render_django("<body><c-own-slider /></body>")
 
-        assert "registerComponent" in html
-        assert "slides" in html
+        assert "__citryRuntime.registerTypeOptions.bind(" in html
+        assert '"slides":3' in html
 
 
 @pytest.mark.usefixtures("borrowed")
@@ -63,5 +63,5 @@ class TestBorrowed:
         html = render_django("<body><c-borrowed-slider /></body>")
 
         assert "/static/slider/slider.js" in html
-        assert "registerComponent" not in html
+        assert "__citryRuntime.registerTypeOptions.bind(" not in html
         assert "--accent" not in html

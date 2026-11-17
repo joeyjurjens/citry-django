@@ -1,3 +1,4 @@
+import json
 import re
 from pathlib import Path
 
@@ -7,6 +8,43 @@ from django.conf import settings
 from django.template import Context, engines
 
 from citry_django_compressor import GROUPS, Kind, collecting
+
+NEEDS_CITRY_PLACEMENT = pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Needs Citry: an interactive region's assets are written around its Vue mount "
+        "point and ignore <c-css /> and <c-js />, so the page cannot collect, dedupe, or "
+        "bundle them."
+    ),
+)
+
+
+def server_data(html):
+    """Each component instance's `js_data()`, as the page sends it to Vue.
+
+    Citry 1.0 puts it in the page's JSON app data, one `serverData` entry per
+    instance, rather than in a script that registers it.
+    """
+    documents = re.findall(
+        r'<script type="application/json" data-citry-vue-document="[^"]+"[^>]*>(.*?)</script>',
+        html,
+        re.DOTALL,
+    )
+    found = []
+
+    def walk(value):
+        if isinstance(value, dict):
+            if "serverData" in value:
+                found.append(value["serverData"])
+            for item in value.values():
+                walk(item)
+        elif isinstance(value, list):
+            for item in value:
+                walk(item)
+
+    for document in documents:
+        walk(json.loads(document))
+    return found
 
 
 @pytest.fixture
@@ -144,27 +182,10 @@ class TestJavaScriptCallbacks:
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_js_data_is_serialized(self, render_page):
-        """js_data() should be serialized into the page for $component callbacks."""
-        import base64
-        import json
-        import re
-
+        """js_data() reaches the page for the component's own JavaScript."""
         html = render_page("<c-callback-component value='myvalue'/>")
-        # The component should render
-        assert "callback-test" in html
-        # js_data is serialized as a script that registers the data with Citry's manager
-        # Look for the registerComponentData call which contains the data
-        assert "registerComponentData" in html
-        # Extract the base64 encoded data from the registerComponentData call
-        match = re.search(r'registerComponentData\([^,]+,\s*[^,]+,\s*atob\("([^"]+)"\)\)', html)
-        assert match is not None, "Could not find registerComponentData call with base64 data"
-        encoded_data = match.group(1)
-
-        # Decode and verify the data structure
-        decoded = base64.b64decode(encoded_data).decode("utf-8")
-        data = json.loads(decoded)
-        assert "callback_value" in data
-        assert data["callback_value"] == "myvalue"
+        assert 'class="callback-test"' in html
+        assert {"callback_value": "myvalue"} in server_data(html)
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_multiple_callback_instances(self, render_page):
@@ -172,23 +193,18 @@ class TestJavaScriptCallbacks:
         html = render_page(
             "<c-callback-component value='first'/><c-callback-component value='second'/>"
         )
-        # Both instances should render
-        assert html.count("callback-test") == 2
-        # The callback code should be present (deduplicated)
-        assert "$component" in html or "callback" in html
-        # Both should have their data registered
-        assert "registerComponentData" in html
+        assert html.count('class="callback-test"') == 2
+        data = server_data(html)
+        assert {"callback_value": "first"} in data
+        assert {"callback_value": "second"} in data
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_file_based_js_with_callback(self, render_page):
         """File-based JS with $component callback should work."""
         html = render_page("<c-file-callback-component value='filetest'/>")
-        # The component should render
-        assert "file-callback-test" in html
-        # The file-based JS should be present (either inline or as URL)
-        assert "$component" in html or "file-callback" in html
-        # js_data should still be serialized
-        assert "registerComponentData" in html
+        assert 'class="file-callback-test"' in html
+        assert "CACHE/js" in html
+        assert {"file_callback_value": "filetest"} in server_data(html)
 
 
 class TestDeduplication:
@@ -206,7 +222,7 @@ class TestDeduplication:
         """Same JS from multiple components should only be compressed once."""
         html = render_page("<c-callback-component value='a'/><c-callback-component value='b'/>")
         # Both should render
-        assert html.count("callback-test") == 2
+        assert html.count('class="callback-test"') == 2
 
 
 class TestMixedAssets:
@@ -234,9 +250,15 @@ class TestMixedAssets:
         """The runtime is the same on every page but Citry serves it itself,
         and one instance's `js_data` belongs to that instance."""
         html = render_page("<c-callback-component value='myvalue'/>")
-        assert "registerComponentData" in html
+        assert {"callback_value": "myvalue"} in server_data(html)
+        assert "Citry interactive runtime" in html
+        for path in re.findall(r"/static/(CACHE/js/[a-f0-9]+\.js)", html):
+            bundled = (Path(settings.COMPRESS_ROOT) / path).read_text()
+            assert "myvalue" not in bundled
+            assert "Citry interactive runtime" not in bundled
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @NEEDS_CITRY_PLACEMENT
     def test_multiple_components_compressed_together(self, render_page):
         """Two components with different CSS still produce one stylesheet.
 
@@ -449,6 +471,7 @@ class TestWhatIsBundled:
         component("<section><c-kind-inline /><c-kind-file /></section>", name="kind-nested")
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    @NEEDS_CITRY_PLACEMENT
     def test_inline_and_static_assets_are_bundled(self, render_django):
         """Both ways of declaring an asset end up in a file of ours."""
         inline = render_django("<body><c-kind-inline /><c-js /></body>")
@@ -470,6 +493,7 @@ class TestWhatIsBundled:
         assert "CACHE/js" not in html
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    @NEEDS_CITRY_PLACEMENT
     def test_three_regions_of_mixed_assets_bundle_once(self, render_django):
         """Nested, repeated, and unbundleable, on one page.
 
@@ -515,6 +539,7 @@ class TestPerInstanceAssets:
         return set(re.findall(r"/static/CACHE/[a-z]+/[a-f0-9]+\.[a-z]+", html))
 
     @pytest.mark.usefixtures("compressor_enabled", "product")
+    @NEEDS_CITRY_PLACEMENT
     def test_many_instances_do_not_make_many_files(self, render_django):
         """A catalogue has 200k products; it does not have 200k stylesheets.
 
@@ -552,6 +577,7 @@ class TestPerInstanceAssets:
         assert set(elements) == set(blocks)
 
     @pytest.mark.usefixtures("compressor_enabled", "product")
+    @NEEDS_CITRY_PLACEMENT
     def test_what_belongs_to_one_render_stays_in_the_page(self, render_django):
         """Bundling it would put one page's data in a file meant to be shared,
         and give every page a file of its own."""

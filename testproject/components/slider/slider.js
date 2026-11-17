@@ -1,3 +1,3 @@
-$component((el, data) => {
-    el.dataset.slides = data.slides;
+$component(({ component }) => {
+    component.$refs.slider.dataset.slides = component.slides;
 });

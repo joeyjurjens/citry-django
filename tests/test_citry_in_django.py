@@ -92,11 +92,13 @@ class TestEverythingCitryAllows:
         )
         assert out.count('class="wrapper"') == 2 and "deep" in out
 
-    def test_element_key_metadata_attribute(self, render_django):
+    def test_element_key(self, render_django):
+        """Citry 1.0 keeps `#c-key` for matching rows across renders, but no
+        longer writes it to the page as `data-citry-key`."""
         out = render_django(
             '<c-for each="i in items"><b #c-key="i">{{ i }}</b></c-for>', items=[1, 2]
         )
-        assert "data-citry-key" in out
+        assert out == "<b>1</b><b>2</b>"
 
     def test_slot_fallback(self, render_django):
         assert "fallback" in render_django("<c-fb/>")

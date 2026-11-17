@@ -1,3 +1,5 @@
+import re
+
 import pytest
 from citry import Citry, Component
 from django.test import RequestFactory
@@ -56,10 +58,14 @@ class TestMounting:
 
         class Widget(Component):
             citry = app
-            template = '<div x-data="{}">x</div>'
+            template = '<button @click="count++">x</button>'
+            js = "$component({ data() { return { count: 0 } } })"
 
         app.register(Widget, "mounted-widget")
-        assert f"/citry/{release()}/citry.js" in str(Widget())
+        html = str(Widget())
+        # Citry 1.0 names the file after a hash of its contents as well.
+        assert re.search(rf'src="/citry/{release()}/citry\.[0-9a-f]+\.js"', html)
+        assert "Citry interactive runtime" not in html
 
 
 class TestServing:

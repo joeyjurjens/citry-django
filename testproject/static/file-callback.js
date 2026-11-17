@@ -1,4 +1,4 @@
 // File-based JS with $component callback
-$component(({ data }) => {
-    console.log("file callback:", data.file_callback_value);
+$component(({ component }) => {
+    console.log("file callback:", component.file_callback_value);
 });

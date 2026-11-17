@@ -238,7 +238,7 @@ class ComponentCallbackComponent(Component):
     def js_data(self, kwargs: Kwargs, slots) -> JsData:
         return self.JsData(callback_value=kwargs.value)
 
-    js = '$component(({ data }) => { console.log("callback:", data.callback_value); });'
+    js = '$component(({ component }) => { console.log("callback:", component.callback_value); });'
 
     template = '<div class="callback-test">Callback works</div>'
 

@@ -4,6 +4,15 @@ from testproject.citry_app import app
 
 from citry_django.registry import citry_app_source
 
+NEEDS_CITRY_PLACEMENT = pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Needs Citry: an interactive region's assets are written around its Vue mount "
+        "point and ignore <c-css /> and <c-js />, so the page cannot collect, dedupe, or "
+        "bundle them."
+    ),
+)
+
 #: What the component below was handed, cleared per test by the fixture.
 RECEIVED: list = []
 
@@ -107,6 +116,7 @@ class TestPageAssets:
         html = render_django("<c-page-css />")
         assert ".x{color:red}" in html
 
+    @NEEDS_CITRY_PLACEMENT
     def test_two_regions_share_one_runtime(self, component, render_django):
         """The whole reason the page places them: a runtime per region is a
         runtime too many, and the second would re-register the first's."""
@@ -135,6 +145,7 @@ class TestPageAssets:
         html = render_django("<head><c-css /></head><body><c-page-head /></body>")
         assert ".head{}" in html.split("</head>")[0]
 
+    @NEEDS_CITRY_PLACEMENT
     def test_a_nonce_does_not_stop_the_page_collecting(self, component, render_django):
         """What Citry emits depends on the request, and nothing here reads it.
 
@@ -196,6 +207,7 @@ class TestPageAssetsNesting:
         )
         assert html.count(".shared{}") == 1
 
+    @NEEDS_CITRY_PLACEMENT
     def test_an_included_template_collects_into_the_same_page(self, component, render_django):
         """`{% include %}` renders its own template, not its own page.
 
