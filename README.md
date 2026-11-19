@@ -548,7 +548,8 @@ So citry-django writes each island in a partial response as a Citry
 - the request carries `HX-Request: true`, which htmx sends with every
   request, including a boosted link;
 - or the view sets `request.citry_partial = True`, for a client of your
-  own:
+  own. A view that sets it to `False` answers a whole page, whatever the
+  headers say.
 
 ```python
 def card(request):
@@ -560,7 +561,8 @@ A fragment holds the island's HTML, a small loader script and a data block.
 When the browser inserts it:
 
 1. The loader adds Citry's runtime if the page does not have it yet, and
-   does nothing if it does, so the runtime loads once.
+   does nothing if it does. Two islands inserted before the runtime has
+   loaded may each add a runtime tag; the second copy does nothing.
 2. The runtime finds the data block and starts the island as its own Vue
    app. Removing the HTML stops the app.
 3. The island's server events pass Django's CSRF check and Citry's State
@@ -573,8 +575,9 @@ for example with an island of its own.
 Things to know:
 
 - Mount [Citry's routes](#citrys-own-routes). A fragment loads the runtime
-  and the island's files by URL, so without the routes a partial that holds
-  an island raises `IslandStrategyError`.
+  and the island's files by URL. Without the routes, citry-django writes the
+  island for a whole page, as it does for any other response, and with
+  `DEBUG` on it issues `PartialResponseWarning`.
 - Swap into a plain wrapper with `hx-swap="innerHTML"`. `hx-select`,
   out-of-band swaps, or a swap straight into a `<tbody>` or `<select>` drop
   the data block, and the island shows but does nothing.
@@ -589,12 +592,16 @@ Things to know:
   own response. citry-django uses the nonce it keeps for server events; see
   [HTML a server event sends back needs the page's CSP
   nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce). It
-  keeps a nonce only for a page that holds an island.
-- A region without Vue keeps its tags in a partial too, each written once.
+  starts keeping a visitor's nonce on the first page that holds an island,
+  and from then on every whole page the visitor loads replaces it. A
+  partial for a visitor who has not loaded such a page carries its own
+  response's nonce, and the browser refuses to start it.
+- A component without Vue in a partial gets its `<link>`, `<style>` and
+  `<script>` tags in the partial itself, each written once.
 - With `DEBUG` on, a response written for a whole page that holds an island
-  but no `<body>` raises `PartialResponseWarning`. It is usually a partial
-  that citry-django could not recognise, such as one fetched without
-  `HX-Request`.
+  but has no `<body>`, `<html>` or doctype issues `PartialResponseWarning`.
+  It is usually a partial that citry-django could not recognise, such as
+  one fetched without `HX-Request`.
 
 On Citry 1.1.0, a fragment's loader adds Citry's runtime but not the browser
 code of Citry's extensions. With i18n configured, a fragment inserted into a
@@ -1142,9 +1149,11 @@ page that holds a component that needs Vue, and `page_csp_nonce` gives it
 back. Pass the function itself: citry-django keeps the nonce only when the
 setting is `page_csp_nonce`. It needs Django's session middleware, and it
 saves the session on every such page view, creating one for a visitor who
-had none. The session keeps the nonce of the last such page a visitor
-loaded, so HTML for a page in another tab carries the wrong nonce, and the
-browser refuses to start it.
+had none. Once a visitor has a kept nonce, every whole page they load
+replaces it, with or without an island, and saves the session too. The
+session keeps the nonce of the last page a visitor loaded, so HTML for a
+page in another tab carries the wrong nonce, and the browser refuses to
+start it.
 
 ### Injection safety
 
