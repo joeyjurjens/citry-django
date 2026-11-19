@@ -20,7 +20,7 @@ from django.utils.safestring import mark_safe
 
 from .engine import explain_tokenizer_disagreement, get_django_engine
 from .expressions import is_dotted_path
-from .islands import island_options, serialize_island
+from .islands import ensure_csrf_cookie, island_options, serialize_island
 from .nodes import CitryParser, CitrySegment
 from .registry import get_tokenizer
 
@@ -130,7 +130,10 @@ class _BlockState:
         """
         if rendered.is_component_root:
             island = serialize_island(rendered, csp_nonce=self.options.csp_nonce)
-            return rendered if island is None else island
+            if island is None:
+                return rendered
+            ensure_csrf_cookie(self.options.request)
+            return island
         # A `<c-if>` branch, a `<c-for>` body or a fill: not a component of its
         # own, so look inside it. These renders belong to this block alone,
         # which makes replacing their parts in place safe.

@@ -875,6 +875,18 @@ on mixed templates, since a Django `{% for %}` can introduce names Citry cannot
 see. `citry check --static` does not load your app, so it cannot recognise
 Django syntax at all.
 
+### Server events need Django's default CSRF cookie
+
+Citry's server events (`Events`) pass Django's own CSRF check: the browser
+reads the `csrftoken` cookie and sends it back in the `X-CSRFToken` header.
+A page that holds a component that needs Vue asks Django for the token, as
+`{% csrf_token %}` does, so Django sets the cookie even on a page without a
+form. The token is not written into the page.
+
+The browser reads Django's default names only. With `CSRF_USE_SESSIONS`,
+`CSRF_COOKIE_HTTPONLY`, or a custom `CSRF_COOKIE_NAME` or `CSRF_HEADER_NAME`,
+server events fail Django's CSRF check.
+
 ### Injection safety
 
 Citry-rendered output is never spliced into Django template *source*, so a

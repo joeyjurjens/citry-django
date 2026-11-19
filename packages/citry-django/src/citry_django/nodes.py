@@ -14,6 +14,7 @@ from .i18n import LOCALE_PROVIDE, locale_context
 from .islands import (
     ISLANDS_PROVIDE,
     IslandOptions,
+    ensure_csrf_cookie,
     refuse_misplaced_islands,
     request_csp_nonce,
     serialize_region,
@@ -184,7 +185,7 @@ class CitryFragment(template.Node):
         provides = {
             HOST_PROVIDE: variables,
             # Islands built inside a component's Django blocks read this.
-            ISLANDS_PROVIDE: IslandOptions(csp_nonce=nonce),
+            ISLANDS_PROVIDE: IslandOptions(csp_nonce=nonce, request=request),
         }
         app = get_citry_app()
         # Citry content follows the language Django activated for this
@@ -199,8 +200,11 @@ class CitryFragment(template.Node):
             provides=provides,
             origin=self.citry_origin,
         )
-        html, _island = serialize_region(rendered, csp_nonce=nonce)
+        html, island = serialize_region(rendered, csp_nonce=nonce)
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
+        if island:
+            # An island may hold Events, whose calls need the CSRF cookie.
+            ensure_csrf_cookie(request)
         return mark_safe(html)
 
     def __repr__(self) -> str:

@@ -23,6 +23,8 @@ from typing import Any
 
 from citry import CitryRender
 from django.core.exceptions import ImproperlyConfigured
+from django.http import HttpRequest
+from django.middleware.csrf import get_token
 from django.utils.html import escape
 
 from .registry import deps_strategy
@@ -75,6 +77,7 @@ class IslandOptions:
     """
 
     csp_nonce: str | None
+    request: Any = None
 
 
 def island_ids(html: str) -> set[str]:
@@ -109,7 +112,30 @@ def island_options(citry_context: Any) -> IslandOptions:
     provided = citry_context.provides.get(ISLANDS_PROVIDE)
     if isinstance(provided, IslandOptions):
         return provided
-    return IslandOptions(csp_nonce=request_csp_nonce(citry_context.variables.get("request")))
+    request = citry_context.variables.get("request")
+    return IslandOptions(csp_nonce=request_csp_nonce(request), request=request)
+
+
+def ensure_csrf_cookie(request: Any) -> None:
+    """Make Django send the CSRF cookie with the response that holds an island.
+
+    Citry's Events calls pass Django's own CSRF check: the browser runtime
+    reads the `csrftoken` cookie and sends it back as a header. A page with
+    no form never asks Django for a token, so without this the cookie may be
+    missing and the first call fails with a 403. Asking for the token is
+    what `{% csrf_token %}` does too; the token itself is not written into
+    the page.
+
+    TODO(C2): ask only for islands that hold an Events component, once Citry
+    can tell which ones do. Until then every island asks.
+
+    TODO: the browser runtime reads the default cookie and header names. A
+    project with CSRF_USE_SESSIONS, CSRF_COOKIE_HTTPONLY, or a custom
+    CSRF_COOKIE_NAME or CSRF_HEADER_NAME needs a matching runtime
+    configuration, which citry-django does not write yet.
+    """
+    if isinstance(request, HttpRequest):
+        get_token(request)
 
 
 def request_csp_nonce(request: Any) -> str | None:
