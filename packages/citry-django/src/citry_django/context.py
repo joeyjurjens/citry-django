@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from .compat import StrEnum
+from enum import StrEnum
 
 
 class ContextBehavior(StrEnum):

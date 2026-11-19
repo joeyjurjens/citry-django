@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
+from enum import StrEnum
 from functools import partial
 from pathlib import PurePosixPath
 from typing import Any
@@ -15,7 +16,6 @@ from compressor.js import JsCompressor
 from compressor.utils import get_class
 from django.conf import settings
 
-from citry_django.compat import StrEnum
 from citry_django.page import current_page
 
 __all__ = ["CitryCompressorExtension"]
