@@ -263,11 +263,25 @@ gives one island per row, and the `<ul>` and `<li>` stay plain HTML. A Django
 each iteration's component is the root of its own app. A Citry `<c-for>` that
 repeats an interactive component inside one island still needs `#c-key`.
 
-Such a component cannot take content that the component around it passes
-in, between its tags or in a `<c-fill>`, when that content needs Vue too:
-Vue cannot own that content from inside a separate app. citry-django then
-raises `IslandSlotError`. Write the Django tag as `<c-if>` or `<c-for>`, so
-both components stay in one island.
+A component becomes an island only when no Vue app holds it already. So
+citry-django waits until the whole `<c-*>` region has rendered, then decides:
+
+- When nothing else in the region needs Vue, each such component becomes its
+  own island, as in the list above.
+- When something else in the region needs Vue, the whole region is one Vue
+  app, and it holds these components too. The HTML that Django writes around
+  them goes into that app as finished blocks; see
+  [Django content inside an interactive component](#django-content-inside-an-interactive-component).
+- The same happens when such a component holds content that the component
+  around it passes in, between its tags or in a `<c-fill>`. Vue cannot own
+  that content from a separate app, so the component cannot be an island of
+  its own.
+
+A component you render straight from Python has no region around it, so
+each such component becomes an island where it stands. When it holds
+content from the component around it, citry-django raises
+`IslandSlotError`. Write the Django tag as `<c-if>` or `<c-for>`, so both
+components stay in one island.
 
 A page rendered through a Django template loads Citry's browser runtime
 once however many islands it holds; see
@@ -277,6 +291,57 @@ inside it writes its own copy, and the browser runs it once. An
 island can update only the components inside it: a server
 event in one row cannot re-render another row. Put components that work
 together in one Citry component, so they share an island.
+
+#### Django content inside an interactive component
+
+An interactive component can hold what Django renders: a fill written in a
+Django template, or a static component whose own template has Django tags.
+
+```html
+{% load i18n %}
+<c-modal title="Help">
+  {% translate "Read the guide first." %}
+  {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+</c-modal>
+```
+
+Citry puts Django's output into the Vue app as finished blocks of HTML. Vue
+inserts each block as it is and never compiles it, so Vue syntax in it,
+such as `{{ }}` or `@click` in a visitor's text, stays text. Inside these
+blocks the following work:
+
+- value tags, filters, `{% if %}`, `{% for %}` and `{% with %}`;
+- components that need no Vue;
+- a component that needs Vue between two complete pieces of Django HTML, or
+  inside a Django block, as long as no element that Django writes encloses
+  it. It is part of the same app.
+
+A component that needs Vue may also have Django tags in its own template,
+such as `{% url %}` in a component with `js_data()`, as long as that
+template has no Vue syntax. Citry writes the template as a finished block
+too.
+
+citry-django raises `IslandContentError` for Django output that Vue cannot
+hold, and says what to change:
+
+| Django output inside an interactive component | What to do |
+|---|---|
+| HTML that is not complete, such as `{{ html\|safe }}` holding an unclosed `<div>` | Make the HTML complete, or keep each Django tag inside the element it opens |
+| A component that needs Vue inside an element of HTML that a template with Django tags wrote | Write the element and the Django tag around the component as Citry: `<c-if>` and `<c-for>` for `{% if %}` and `{% for %}` |
+| A `<script>` | Move it into the component's `js`, or onto the page outside the component |
+| A `<noscript>` | Move it onto the page outside the component |
+| HTML inside `<svg>`, `<math>` or a text-only element such as `<textarea>` | Write that markup as Citry, or pass the text in as a value |
+| Vue syntax in a template that also has Django tags | Compute the Django value in `template_data()` (`reverse()`, `static()`, `gettext()`), or move the Vue syntax into a component whose template has no Django tags |
+
+A server event renders a component again with only what its handler
+passes. A fill that the page's Django template wrote is not part of that,
+so after a handler returns the modal above, the modal shows its fallback
+content instead of the fill. Django tags in a component's own template
+render again for the event, with what
+[`render_inputs`](#what-a-component-a-server-event-renders-can-read) gives
+them. So put Django content that must stay after a server event into a
+component's template, and render that component inside the one the
+handler returns.
 
 ## Writing an input
 
@@ -389,7 +454,10 @@ a component, after Django's and Citry's CSRF checks, the State check and
 the handler. The component gets what a region
 gets on the page: `request` and your context processors' values as
 template globals, those values under `self.inject("django")`, and Django's
-active language as its locale.
+active language as its locale. It also tells citry-django that a component
+in a Django block is part of the Vue app the event renders, rather than an
+island of its own. Without it, a server event whose render reaches such a
+component fails.
 
 The values come from the server event's request, not from the page's:
 
@@ -1007,7 +1075,10 @@ browser refuses to start it.
 ### Injection safety
 
 Citry-rendered output is never spliced into Django template *source*, so a
-`{%` arriving in user data is inert rather than executed.
+`{%` arriving in user data is inert rather than executed. In the same way,
+Django's output inside an interactive component reaches the browser as
+HTML that Vue inserts but never compiles, so a `{{ }}` or a Vue attribute
+arriving in user data stays text.
 
 ## Development
 
