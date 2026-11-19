@@ -6,11 +6,12 @@ import types
 
 import pytest
 from citry import Citry, Component
+from citry.ext.events import event
 from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory
 
 from citry_django import CitryDjangoExtension
-from citry_django.urls import release, urlpatterns
+from citry_django.urls import packed, urlpatterns
 
 
 @pytest.fixture
@@ -23,11 +24,21 @@ def mounted():
 def runtime_view(patterns):
     """The pattern serving the client runtime.
 
-    One level down: the mount wraps its routes in a release segment, so that
-    every URL Citry builds carries it.
+    One level down: the mount wraps Citry's routes in one `include()`.
     """
     nested = patterns[0].url_patterns
     return next(p for p in nested if "citry.js" in str(p.pattern))
+
+
+def served_file(patterns, file_path, **headers):
+    """The response the mount gives for `file_path`, a path below the prefix."""
+    nested = patterns[0].url_patterns
+    for pattern in nested:
+        match = pattern.resolve(file_path)
+        if match:
+            request = RequestFactory().get(f"/citry/{file_path}", **headers)
+            return match.func(request, *match.args, **match.kwargs)
+    raise AssertionError(f"no route serves {file_path}")
 
 
 def sri(content):
@@ -52,21 +63,7 @@ class TestMounting:
         """Without it Citry has nowhere to point a `src` at, so it inlines the
         whole bundle into every page instead."""
         app, _ = mounted
-        assert app.mounted_prefix.startswith("/citry/")
-
-    def test_the_prefix_carries_a_release_segment(self, mounted):
-        """`Citry.build_url` is the prefix and the route's path, so a segment
-        here is in every URL Citry builds.
-
-        Citry names its own routes: `citry.js` is `citry.js` at every version.
-        Told to keep one forever, a browser would keep the wrong one after an
-        upgrade; under a new segment it is a different file instead.
-        """
-        app, _ = mounted
-        segment = app.mounted_prefix.removeprefix("/citry/")
-
-        assert segment and "/" not in segment
-        assert segment == release()
+        assert app.mounted_prefix == "/citry"
 
     def test_minifying_is_refused(self, settings):
         """Citry pins each file with an `integrity` hash, so a browser would
@@ -113,9 +110,7 @@ class TestMounting:
         settings.MIDDLEWARE = []
 
         html = str(interactive(app, "mounted-widget")())
-        tag = re.search(
-            rf'<script src="(/citry/{release()}/citry\.[0-9a-f]{{64}}\.js)"([^>]*)>', html
-        )
+        tag = re.search(r'<script src="(/citry/citry\.[0-9a-f]{64}\.js)"([^>]*)>', html)
         assert tag, html
         src, attributes = tag.groups()
         pinned = re.search(r'integrity="(sha384-[^"]+)"', attributes)
@@ -136,41 +131,121 @@ class TestMounting:
 
 
 class TestServing:
-    def test_the_response_is_kept_forever(self, mounted):
-        """It can be: other bytes arrive under another release segment."""
+    def test_citry_keeps_deciding_how_long_a_file_is_kept(self, mounted):
+        """Citry marks a file at a fixed name for revalidation.
+
+        `cache/<class_id>.js` changes with the component, so a browser told to
+        keep it for a year would run the old component JS after a deploy.
+        """
+        app, patterns = mounted
+
+        class Cached(Component):
+            citry = app
+            template = "<div>x</div>"
+            js = "console.log('cached')"
+
+        app.register(Cached, "mounted-cached")
+        response = served_file(patterns, f"cache/{Cached.class_id}.js")
+
+        assert response.status_code == 200
+        assert response["Cache-Control"] == "no-cache"
+        assert response["ETag"]
+
+    def test_the_unhashed_runtime_is_not_stored(self, mounted):
         _, patterns = mounted
         response = runtime_view(patterns).callback(RequestFactory().get("/citry/citry.js"))
 
-        assert response["Cache-Control"] == "public, max-age=31536000, immutable"
-        assert response["ETag"]
+        assert response["Cache-Control"] == "no-store"
 
-    def test_an_endpoint_is_left_alone(self, mounted):
+    def test_a_gzipped_file_keeps_citrys_tag_as_a_weak_one(self, mounted):
+        """The gzipped body is a different body, so its ETag is weak. Citry
+        compares a returned tag the weak way and still answers 304."""
+        app, patterns = mounted
+
+        class Zipped(Component):
+            citry = app
+            template = "<div>x</div>"
+            js = "console.log('zipped')"
+
+        app.register(Zipped, "mounted-zipped")
+        url = f"cache/{Zipped.class_id}.js"
+        plain = served_file(patterns, url)
+        zipped = served_file(patterns, url, HTTP_ACCEPT_ENCODING="gzip")
+
+        assert zipped["ETag"] == f"W/{plain['ETag']}"
+        assert zipped["Cache-Control"] == "no-cache"
+        again = served_file(
+            patterns, url, HTTP_ACCEPT_ENCODING="gzip", HTTP_IF_NONE_MATCH=zipped["ETag"]
+        )
+        # The 304 repeats the tag and the Vary the 200 carried, so a cache
+        # holding the gzipped copy may keep using it.
+        assert again.status_code == 304
+        assert again["ETag"] == zipped["ETag"]
+        assert again["Vary"] == "Accept-Encoding"
+
+    def test_a_plain_answer_still_varies_on_accept_encoding(self, mounted):
+        """Otherwise a shared cache that first stores the plain body hands
+        it to every client after that, gzip-capable or not."""
+        _, patterns = mounted
+        response = runtime_view(patterns).callback(RequestFactory().get("/citry/citry.js"))
+
+        assert "Content-Encoding" not in response
+        assert response["Vary"] == "Accept-Encoding"
+
+    def test_head_gets_the_headers_get_gets(self, mounted):
+        _, patterns = mounted
+        view = runtime_view(patterns).callback
+        get = view(RequestFactory().get("/citry/citry.js", HTTP_ACCEPT_ENCODING="gzip"))
+        head = view(RequestFactory().head("/citry/citry.js", HTTP_ACCEPT_ENCODING="gzip"))
+
+        for name in ("Content-Encoding", "Vary", "Cache-Control"):
+            assert head[name] == get[name]
+
+    def test_an_endpoint_is_left_alone(self, settings, client):
         """Citry mounts its event endpoints beside the files.
 
-        Those answer per request, in JSON. Telling a browser to keep one for a
-        year would break every interactive component on the page.
+        Those answer each request for one visitor, so the mount must not gzip
+        them or change their headers, even when the URL of a GET event ends
+        in something that looks like a file name.
         """
-        _, patterns = mounted
-        events = next(
-            p for p in patterns[0].url_patterns if str(p.pattern).endswith("ext/events/call")
-        )
-        response = events.callback(RequestFactory().post("/citry/ext/events/call"))
+        app = Citry(autodiscover=False, extensions=[CitryDjangoExtension()], secret="mounted-" * 6)
+        urlconf = types.ModuleType("mounted_site_urls")
+        urlconf.urlpatterns = [*urlpatterns(app, "/citry")]
+        settings.ROOT_URLCONF = urlconf
+        # Wagtail's middleware reads the database, which these requests do not need.
+        settings.MIDDLEWARE = []
 
-        assert "Cache-Control" not in response
+        class Report(Component):
+            citry = app
+            template = "<div>x</div>"
+
+            class Events:
+                @event(name="export.csv", methods=("GET",), csrf=False)
+                def export(self):
+                    return {"user": "alice"}
+
+        app.register(Report, "mounted-report")
+        response = client.get(
+            f"/citry/ext/events/e/{Report.class_id}/export.csv", HTTP_ACCEPT_ENCODING="gzip"
+        )
+
+        assert response.status_code == 200
+        assert b'"alice"' in response.content
+        assert "Content-Encoding" not in response
+        assert "Vary" not in response
+        assert response["Cache-Control"] == "no-store"
 
     def test_a_body_is_gzipped_once(self, mounted):
         """Around 10 ms for the 400 kB runtime, worth paying on the first
         request and not on every one."""
-        from citry_django.urls import packed
-
         _, patterns = mounted
         request = RequestFactory().get("/citry/citry.js", HTTP_ACCEPT_ENCODING="gzip")
         view = runtime_view(patterns).callback
         first = view(request).content
-        keys = dict(packed)
+        keys = list(packed)
 
         assert view(request).content == first
-        assert dict(packed) == keys
+        assert list(packed) == keys
 
     def test_a_response_is_gzipped_for_a_client_that_asks(self, mounted):
         """These come from a view, so a web server rule naming a static

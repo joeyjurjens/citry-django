@@ -81,9 +81,7 @@ def test_two_islands_hydrate_and_answer_server_events(live_server, browser_page)
     sync_api.expect(second.locator("button.bump")).to_have_text("second: 0")
     second.locator("button.bump").click()
     sync_api.expect(second.locator("button.bump")).to_have_text("bumped: 1")
-    sync_api.expect(first.locator(".path")).to_have_text(
-        re.compile(r"/citry/[0-9a-f]{8}/ext/events/")
-    )
+    sync_api.expect(first.locator(".path")).to_have_text(re.compile(r"/citry/ext/events/"))
 
     # Vue adopted the server HTML: no hydration mismatch, and nothing failed.
     assert problems == []
@@ -128,9 +126,7 @@ def test_fills_with_django_tags_hydrate_and_answer_server_events(live_server, br
     panel.locator("button.bump").click()
     sync_api.expect(panel.locator("button.bump")).to_have_text("1")
     sync_api.expect(panel.locator(".guide")).to_have_text("Read the guide")
-    sync_api.expect(panel.locator(".path")).to_have_text(
-        re.compile(r"^/citry/[0-9a-f]{8}/ext/events/")
-    )
+    sync_api.expect(panel.locator(".path")).to_have_text(re.compile(r"^/citry/ext/events/"))
 
     # The modal's own handler returns a new modal without the fill the page
     # wrote, so it shows its fallback.
@@ -160,7 +156,7 @@ def test_the_runtime_loads_through_the_mount_with_its_integrity(live_server, bro
         "response",
         lambda response: (
             runtime.append(response.all_headers())
-            if re.search(r"/citry/[0-9a-f]{8}/citry\.[0-9a-f]{64}\.js$", response.url)
+            if re.search(r"/citry/citry\.[0-9a-f]{64}\.js$", response.url)
             else None
         ),
     )
@@ -168,7 +164,7 @@ def test_the_runtime_loads_through_the_mount_with_its_integrity(live_server, bro
     response = page.goto(f"{live_server.url}/page/")
     assert response is not None
     assert response.ok
-    script = page.locator('script[src^="/citry/"][src*="/citry."]')
+    script = page.locator('script[src^="/citry/citry."]')
     assert script.count() == 1
     assert script.get_attribute("integrity").startswith("sha384-")
     assert script.get_attribute("crossorigin") == "anonymous"
@@ -185,7 +181,7 @@ def test_the_runtime_loads_through_the_mount_with_its_integrity(live_server, bro
 
 
 #: Citry's runtime, as the browser fetches it by content hash.
-RUNTIME_URL = re.compile(r"/citry/[0-9a-f]{8}/citry\.[0-9a-f]{64}\.js$")
+RUNTIME_URL = re.compile(r"/citry/citry\.[0-9a-f]{64}\.js$")
 
 
 def watch(page) -> tuple[list[str], list[str]]:
@@ -216,7 +212,7 @@ def mounted_hosts(page) -> list[bool]:
 
 
 def runtime_tags(page) -> int:
-    return page.locator('script[src^="/citry/"][src*="/citry."]').count()
+    return page.locator('script[src*="/citry/citry."]').count()
 
 
 def swap_in_a_card(page) -> None:
@@ -246,9 +242,7 @@ def test_an_htmx_swap_mounts_an_island_on_a_page_that_has_the_runtime(live_serve
     card = page.locator("#cards .counter")
     card.locator("button.bump").click()
     sync_api.expect(card.locator("button.bump")).to_have_text("bumped: 1")
-    sync_api.expect(card.locator(".path")).to_have_text(
-        re.compile(r"^/citry/[0-9a-f]{8}/ext/events/")
-    )
+    sync_api.expect(card.locator(".path")).to_have_text(re.compile(r"^/citry/ext/events/"))
     # The island the page started with still answers on its own.
     first = page.locator(".counter").first
     first.locator("button.bump").click()

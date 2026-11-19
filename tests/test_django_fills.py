@@ -18,7 +18,6 @@ from django.test import Client
 
 from citry_django.content import IslandContentError, refused_content
 from citry_django.registry import citry_app_source
-from citry_django.urls import release
 from events_site.app import app
 from islands import islands, runtime_scripts
 
@@ -243,7 +242,7 @@ def test_a_server_event_renders_django_tags_in_a_fill_again():
     # The fill Help wrote, rendered by Django again for this request.
     assert any('<span class="guide">Read the guide</span>' in block for block in blocks)
     # `request` is the server event's own request, which render_inputs gives.
-    assert any(f'<i class="path">/citry/{release()}/ext/events/' in block for block in blocks)
+    assert any('<i class="path">/citry/ext/events/' in block for block in blocks)
 
 
 class Note(Component):

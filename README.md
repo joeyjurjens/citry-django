@@ -855,28 +855,20 @@ points every `src`. Inside `path("citry/", include(...))` the prefix is added
 twice and every file answers 404. A project that wrapped the call that way
 for citry-django 0.3 drops the wrapper when it upgrades to 0.4.
 
-That wraps Citry's own Django routes and prepares each response the way a web
-server prepares a file, because these are not files a web server serves: they
-come from a view, so an nginx rule naming a static directory never reaches
-them. Each response gets gzip for a client that asks, an `ETag`, and
-`Cache-Control: public, max-age=31536000, immutable`. It prepares only the
-routes that serve files. Citry's event endpoints sit beside them and answer
-each request separately, so the mount leaves them alone.
+That wraps Citry's own Django routes and gzips each file for a client that
+asks, because these are not files a web server serves: they come from a view,
+so an nginx rule naming a static directory never reaches them. It gzips only
+the routes that serve files. Citry's event endpoints sit beside them and
+answer each request separately, so the mount leaves them alone.
 
-Forever is safe because the mount carries a release segment:
-
-```
-/citry/a1b2c3d4/citry.js
-```
-
-`Citry.build_url` is the prefix plus the route's path, so a segment in the
-prefix is in every URL Citry builds. Citry names its own routes, and
-`citry.js` is `citry.js` at every version, so without this a browser told to
-keep one forever would keep the wrong one after an upgrade. The segment is
-derived from the installed Citry version, which is what changes the bytes.
-
-That is also why there is no setting for how long: the URL says which bytes it
-serves, so the answer is always forever.
+How long a browser keeps each file stays Citry's decision, and the mount
+passes Citry's `Cache-Control` and `ETag` through. Citry names the runtime and
+the JavaScript that defines each Vue island by a hash of their content, such as
+`/citry/citry.173bbfea….js`, and marks them `immutable`. A file whose content
+can change at the same name, such as `cache/<class_id>.js`, gets `no-cache`
+and an `ETag`, so after a deploy the browser asks again and gets the new
+component JS. A gzipped file's `ETag` is marked weak (`W/"…"`), because the
+compressed body is a different body with the same content.
 
 ## Settings
 

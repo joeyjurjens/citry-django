@@ -2,21 +2,15 @@ from __future__ import annotations
 
 import gzip
 import hashlib
-from importlib.metadata import PackageNotFoundError, version
-from pathlib import PurePosixPath
+from collections import OrderedDict
+from threading import Lock
 from typing import Any
 
 from citry.contrib.django import urlpatterns as citry_urlpatterns
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.urls import include, path
-
-#: A year, which is as long as `Cache-Control` is allowed to promise.
-FOREVER = 31536000
-
-#: One compressed body per URL. The release segment is in that URL, so an
-#: upgrade is a different key rather than a stale value.
-packed: dict[str, bytes] = {}
+from django.utils.cache import patch_vary_headers
 
 #: What a project that still turns on `CITRY_MINIFY_ASSETS` is told.
 MINIFY_REMOVED = (
@@ -57,38 +51,12 @@ def urlpatterns(app: Any, prefix: str) -> list[Any]:
     # runtime the browser would refuse.
     if getattr(settings, "CITRY_MINIFY_ASSETS", False):
         raise ImproperlyConfigured(MINIFY_REMOVED)
-    token = release()
-    mounted = citry_urlpatterns(app, f"{prefix.rstrip('/')}/{token}")
-    # The patterns sit under `prefix` and the release segment themselves, so
-    # the URLs Citry builds from them and the routes Django matches cannot
-    # disagree.
+    mounted = citry_urlpatterns(app, prefix)
+    # The patterns sit under `prefix` themselves, so the URLs Citry builds
+    # from it and the routes Django matches cannot disagree.
     segment = prefix.strip("/")
-    route = f"{segment}/{token}/" if segment else f"{token}/"
+    route = f"{segment}/" if segment else ""
     return [path(route, include([served(pattern) for pattern in mounted]))]
-
-
-def release() -> str:
-    """A path segment that changes whenever the served bytes could.
-
-    Citry names its own routes: `citry.js` is `citry.js` at every version, so
-    a browser told to keep one forever would keep the wrong one after an
-    upgrade. Putting this in the mount prefix puts it in every URL Citry
-    builds, since `Citry.build_url` is the prefix and the route's path, and
-    an upgrade then reaches a browser as a different file rather than as a
-    revalidation it may skip.
-
-    What can change those bytes is the version of Citry that ships them.
-    """
-    digest = hashlib.sha256(installed("citry").encode())
-    return digest.hexdigest()[:8]
-
-
-def installed(package: str) -> str:
-    """The version of `package`, or a marker when it is not installed."""
-    try:
-        return version(package)
-    except PackageNotFoundError:  # pragma: no cover - Citry is a dependency
-        return "unknown"
 
 
 def served(pattern: Any) -> Any:
@@ -103,51 +71,93 @@ def served(pattern: Any) -> Any:
 
 
 def prepared(request: Any, response: Any) -> Any:
-    """`response` as it should leave: compressed and kept forever.
+    """`response` as it should leave: compressed when it is a file.
 
-    A web server compresses and caches the files it serves, and these are not
-    files it serves: they come from a Django view, so a rule that names a
-    static directory never reaches them, and nginx leaves a proxied response
-    alone unless it was told otherwise.
+    A web server compresses the files it serves, and these are not files it
+    serves: they come from a Django view, so a rule that names a static
+    directory never reaches them, and nginx leaves a proxied response alone
+    unless it was told otherwise.
 
-    Only for the routes that are files. Citry mounts its event endpoints
-    beside them, and those answer in JSON, per request: telling a browser to
-    keep one of those for a year would break every interactive component on
-    the page.
+    Caching stays Citry's to decide. It names the runtime and the
+    JavaScript that defines each Vue island by a hash of their content and
+    marks those `immutable`, and it serves the files whose content can
+    change at a fixed name, such as `cache/<class_id>.js`, with `no-cache`
+    and an `ETag`, so a browser asks again after a deploy instead of keeping
+    the old component JS.
     """
-    if response.status_code != 200 or not is_file(request):
+    if response.status_code not in (200, 304) or not is_file(request, response):
         return response
-    if accepts_gzip(request) and "Content-Encoding" not in response:
-        response.content = compressed(request.path, response.content)
+    # Every answer for a file says it depends on Accept-Encoding, the plain
+    # one too, so a shared cache that first stores the plain body does not
+    # hand it to every client after that.
+    patch_vary_headers(response, ["Accept-Encoding"])
+    if not accepts_gzip(request) or "Content-Encoding" in response:
+        return response
+    # A strong ETag names one exact body, and the gzipped body is a
+    # different one. Weak says "the same content", which is still true. A
+    # 304 repeats the tag the 200 would carry, and Citry compares the tag a
+    # browser sends back the weak way, so a revalidation still gets its 304.
+    etag = response.get("ETag")
+    if etag and not etag.startswith("W/"):
+        response["ETag"] = f"W/{etag}"
+    if response.status_code == 200 and is_text(response):
+        response.content = compressed(response.content)
         response["Content-Encoding"] = "gzip"
-        response["Vary"] = "Accept-Encoding"
-    response["ETag"] = f'"{hashlib.sha256(response.content).hexdigest()[:16]}"'
-    response["Cache-Control"] = f"public, max-age={FOREVER}, immutable"
     return response
 
 
-def is_file(request: Any) -> bool:
-    """Whether this request is for one of the files, rather than an endpoint.
+def is_file(request: Any, response: Any) -> bool:
+    """Whether this answer is one of Citry's public files, not an endpoint.
 
-    A file route names a file: `citry.js`, `cache/Table_a1b2c3.js`,
-    `asset/theme.css`. An endpoint does not: `ext/events/call` and
-    `ext/events/e/<class_id>` are where a component's server-side events are
-    answered, in JSON. Asking the path is what keeps a route Citry adds later
-    from being cached by accident.
+    Citry marks each public JavaScript and CSS file it serves with
+    `Access-Control-Allow-Origin: *`, which the browser needs to check the
+    file's `integrity`, and its endpoints never carry it. Reading the
+    answer rather than the path keeps an endpoint out even when its URL
+    ends in something that looks like a file name, such as a GET event
+    named `export.csv`, whose answer belongs to one visitor.
     """
-    return request.method == "GET" and bool(PurePosixPath(request.path).suffix)
+    return request.method in ("GET", "HEAD") and response.get("Access-Control-Allow-Origin") == "*"
 
 
-def compressed(url: str, content: bytes) -> bytes:
-    """`content` gzipped, once.
+def is_text(response: Any) -> bool:
+    """Whether gzip is worth running: text compresses, images mostly do not."""
+    kind = response.get("Content-Type", "").split(";", 1)[0].strip()
+    return kind.startswith("text/") or kind in TEXT_TYPES
+
+
+#: Content types beyond `text/*` that Citry serves and gzip shrinks.
+TEXT_TYPES = frozenset({"application/javascript", "application/json", "image/svg+xml"})
+
+#: Gzipped bodies by a digest of the plain body, most recently used last.
+packed: OrderedDict[bytes, bytes] = OrderedDict()
+
+#: How many gzipped bodies `packed` keeps.
+PACKED_LIMIT = 64
+
+packed_lock = Lock()
+
+
+def compressed(content: bytes) -> bytes:
+    """`content` gzipped, once per distinct body.
 
     Around 10 ms for the 400 kB runtime, which is worth paying on the first
-    request and not on every one. What a URL serves cannot change while the
-    process runs, because the release segment is part of it.
+    request and not on every one. Keyed by a digest of the body rather than
+    the URL, because a file at a fixed name such as `cache/<class_id>.js`
+    can change while the process runs. The limit keeps the stylesheets
+    Citry builds for each set of `css_data()` values from growing the cache
+    without end, and `mtime=0` makes every worker write the same bytes.
     """
-    if url not in packed:
-        packed[url] = gzip.compress(content, compresslevel=6)
-    return packed[url]
+    key = hashlib.sha256(content).digest()
+    with packed_lock:
+        if key in packed:
+            packed.move_to_end(key)
+            return packed[key]
+    body = gzip.compress(content, compresslevel=6, mtime=0)
+    with packed_lock:
+        packed[key] = body
+        while len(packed) > PACKED_LIMIT:
+            packed.popitem(last=False)
+    return body
 
 
 def accepts_gzip(request: Any) -> bool:
