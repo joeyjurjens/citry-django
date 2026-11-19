@@ -92,11 +92,13 @@ class TestEverythingCitryAllows:
         )
         assert out.count('class="wrapper"') == 2 and "deep" in out
 
-    def test_element_key_metadata_attribute(self, render_django):
+    def test_element_key_is_accepted_in_a_region(self, render_django):
+        """`#c-key` is Citry's to read. Static output carries no trace of it;
+        inside an island it is what tells repeated components apart."""
         out = render_django(
             '<c-for each="i in items"><b #c-key="i">{{ i }}</b></c-for>', items=[1, 2]
         )
-        assert "data-citry-key" in out
+        assert out == "<b>1</b><b>2</b>"
 
     def test_slot_fallback(self, render_django):
         assert "fallback" in render_django("<c-fb/>")

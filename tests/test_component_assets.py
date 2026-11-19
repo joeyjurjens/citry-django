@@ -4,6 +4,8 @@ import pytest
 from citry.ext.dependencies import Script, Style
 from django.templatetags.static import static
 
+from islands import islands
+
 
 @pytest.fixture
 def own(component):
@@ -47,12 +49,17 @@ class TestItsOwn:
         assert "data-ccss-" in html
 
     def test_the_callback_is_registered_with_its_data(self, render_django):
-        """`$component(...)` is expanded server-side and `js_data()` reaches it,
-        which is the whole reason to keep the file here rather than link it."""
+        """The component becomes one island, and `js_data()` reaches the
+        browser in that island's configuration, which is the whole reason to
+        keep the file here rather than link it."""
         html = render_django("<body><c-own-slider /></body>")
+        found = islands(html)
 
-        assert "registerComponent" in html
-        assert "slides" in html
+        assert len(found) == 1
+        assert len(found.configs) == 1
+        assert len(found.starts) == 1
+        assert '"serverData":{"slides":3}' in html
+        assert "el.dataset.slides" in html
 
 
 @pytest.mark.usefixtures("borrowed")

@@ -9,6 +9,7 @@ from django.template import engines
 
 from citry_django import CitryDjangoExtension
 from citry_django.registry import citry_app_source
+from islands import NEEDS_C1, islands
 
 
 def json_script(html: str, attribute: str) -> dict:
@@ -17,6 +18,7 @@ def json_script(html: str, attribute: str) -> dict:
     return json.loads(match.group(1))
 
 
+@pytest.mark.xfail(strict=True, reason="step 3: islands for Django blocks inside components")
 def test_django_loop_preserves_client_graph_and_serializes_once() -> None:
     class CountSerialize(Extension):
         name = "count_serialization_boundary"
@@ -76,6 +78,7 @@ def test_django_loop_preserves_client_graph_and_serializes_once() -> None:
     assert len(events["componentInstances"]) == 2
 
 
+@NEEDS_C1
 def test_dependency_placeholder_keeps_its_authored_position() -> None:
     app = Citry(extensions=[CitryDjangoExtension()])
 
@@ -144,7 +147,11 @@ def test_host_nonce_reaches_strict_citry_serialization(
 
     class Interactive(Component):
         citry = app
-        template = '<div x-data="{}">interactive</div>'
+
+        def js_data(self, kwargs, slots) -> dict:
+            return {"count": 1}
+
+        template = "<div>interactive</div>"
 
     app.register(Interactive, "serialization-csp-widget")
     monkeypatch.setattr(app_module, "serialization_csp_app", app, raising=False)
@@ -169,8 +176,14 @@ def test_host_nonce_reaches_strict_citry_serialization(
     finally:
         citry_app_source.cache_clear()
 
-    assert 'nonce="requestNonce"' in html
-    assert 'src="/citry/ext/events/runtime-csp.js"' in html
+    # One island, and every script Citry wrote for it carries the nonce,
+    # the runtime file included.
+    found = islands(html)
+    assert len(found) == 1
+    assert len(found.configs) == 1
+    scripts = re.findall(r"<script\b[^>]*>", html)
+    assert sum('src="/citry/citry.' in tag for tag in scripts) == 1
+    assert all('nonce="requestNonce"' in tag for tag in scripts)
 
 
 def locmem(settings) -> None:

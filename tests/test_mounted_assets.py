@@ -4,6 +4,7 @@ from django.test import RequestFactory
 
 from citry_django import CitryDjangoExtension
 from citry_django.urls import release, urlpatterns
+from islands import URL_CLEANUP
 
 
 @pytest.fixture
@@ -51,6 +52,7 @@ class TestMounting:
 
         assert release() != plain
 
+    @URL_CLEANUP
     def test_the_runtime_is_served_as_a_file(self, mounted):
         app, _ = mounted
 

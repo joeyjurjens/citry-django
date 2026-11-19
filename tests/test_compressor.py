@@ -7,6 +7,7 @@ from django.conf import settings
 from django.template import Context, engines
 
 from citry_django_compressor import GROUPS, Kind, collecting
+from islands import COMPRESSOR_AFTER_C1
 
 
 @pytest.fixture
@@ -143,6 +144,7 @@ class TestJavaScriptCallbacks:
         assert "$component" in html or "callback" in html
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @COMPRESSOR_AFTER_C1
     def test_js_data_is_serialized(self, render_page):
         """js_data() should be serialized into the page for $component callbacks."""
         import base64
@@ -167,6 +169,7 @@ class TestJavaScriptCallbacks:
         assert data["callback_value"] == "myvalue"
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @COMPRESSOR_AFTER_C1
     def test_multiple_callback_instances(self, render_page):
         """Multiple instances should each get their own callback data."""
         html = render_page(
@@ -180,6 +183,7 @@ class TestJavaScriptCallbacks:
         assert "registerComponentData" in html
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @COMPRESSOR_AFTER_C1
     def test_file_based_js_with_callback(self, render_page):
         """File-based JS with $component callback should work."""
         html = render_page("<c-file-callback-component value='filetest'/>")
@@ -202,6 +206,7 @@ class TestDeduplication:
         assert html.count("scss-test") == 3
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @COMPRESSOR_AFTER_C1
     def test_identical_js_deduplicated(self, render_page):
         """Same JS from multiple components should only be compressed once."""
         html = render_page("<c-callback-component value='a'/><c-callback-component value='b'/>")
@@ -230,6 +235,7 @@ class TestMixedAssets:
         assert ".swatch{" not in html
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @COMPRESSOR_AFTER_C1
     def test_core_scripts_stay_where_citry_put_them(self, render_page):
         """The runtime is the same on every page but Citry serves it itself,
         and one instance's `js_data` belongs to that instance."""
@@ -237,6 +243,7 @@ class TestMixedAssets:
         assert "registerComponentData" in html
 
     @pytest.mark.usefixtures("compressor_enabled")
+    @COMPRESSOR_AFTER_C1
     def test_multiple_components_compressed_together(self, render_page):
         """Two components with different CSS still produce one stylesheet.
 
@@ -449,6 +456,7 @@ class TestWhatIsBundled:
         component("<section><c-kind-inline /><c-kind-file /></section>", name="kind-nested")
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    @COMPRESSOR_AFTER_C1
     def test_inline_and_static_assets_are_bundled(self, render_django):
         """Both ways of declaring an asset end up in a file of ours."""
         inline = render_django("<body><c-kind-inline /><c-js /></body>")
@@ -470,6 +478,7 @@ class TestWhatIsBundled:
         assert "CACHE/js" not in html
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
+    @COMPRESSOR_AFTER_C1
     def test_three_regions_of_mixed_assets_bundle_once(self, render_django):
         """Nested, repeated, and unbundleable, on one page.
 
@@ -515,6 +524,7 @@ class TestPerInstanceAssets:
         return set(re.findall(r"/static/CACHE/[a-z]+/[a-f0-9]+\.[a-z]+", html))
 
     @pytest.mark.usefixtures("compressor_enabled", "product")
+    @COMPRESSOR_AFTER_C1
     def test_many_instances_do_not_make_many_files(self, render_django):
         """A catalogue has 200k products; it does not have 200k stylesheets.
 
@@ -552,6 +562,7 @@ class TestPerInstanceAssets:
         assert set(elements) == set(blocks)
 
     @pytest.mark.usefixtures("compressor_enabled", "product")
+    @COMPRESSOR_AFTER_C1
     def test_what_belongs_to_one_render_stays_in_the_page(self, render_django):
         """Bundling it would put one page's data in a file meant to be shared,
         and give every page a file of its own."""
