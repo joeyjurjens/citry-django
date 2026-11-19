@@ -765,6 +765,9 @@ from citry_django.urls import urlpatterns as citry_urls
 urlpatterns = [*citry_urls(app, "/citry"), ...]
 ```
 
+List it in the root URLconf, not inside an `include()`: the routes already
+sit under the prefix you pass, which is also where Citry points every `src`.
+
 That wraps Citry's own Django routes and prepares each response the way a web
 server prepares a file, because these are not files a web server serves: they
 come from a view, so an nginx rule naming a static directory never reaches

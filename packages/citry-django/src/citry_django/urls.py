@@ -32,7 +32,8 @@ def urlpatterns(app: Any, prefix: str) -> list[Any]:
 
     Without them Citry has nowhere to serve its client runtime from, so it
     inlines the whole bundle into every page, on every request. Mounted, a
-    browser fetches it once::
+    browser fetches it once. List them in the root URLconf, not inside an
+    `include()`, because they already sit under `prefix`::
 
         # urls.py
         from citry_django.urls import urlpatterns as citry_urls
@@ -56,7 +57,13 @@ def urlpatterns(app: Any, prefix: str) -> list[Any]:
         raise ImproperlyConfigured(MINIFY_REMOVED)
     token = release()
     mounted = citry_urlpatterns(app, f"{prefix.rstrip('/')}/{token}")
-    return [path(f"{token}/", include([served(pattern) for pattern in mounted]))]
+    # The patterns sit under `prefix` and the release segment themselves, so
+    # the URLs Citry builds from them and the routes Django matches cannot
+    # disagree. A project lists them at the top of its root URLconf rather
+    # than inside an include().
+    segment = prefix.strip("/")
+    route = f"{segment}/{token}/" if segment else f"{token}/"
+    return [path(route, include([served(pattern) for pattern in mounted]))]
 
 
 def release() -> str:

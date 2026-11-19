@@ -1,3 +1,6 @@
+import re
+import types
+
 import pytest
 from citry import Citry, Component
 from django.core.exceptions import ImproperlyConfigured
@@ -23,6 +26,18 @@ def runtime_view(patterns):
     """
     nested = patterns[0].url_patterns
     return next(p for p in nested if "citry.js" in str(p.pattern))
+
+
+def interactive(app, name):
+    """A component with its own JS, so a render links Citry's runtime."""
+
+    class Interactive(Component):
+        citry = app
+        template = "<div>x</div>"
+        js = "console.log('interactive')"
+
+    app.register(Interactive, name)
+    return Interactive
 
 
 class TestMounting:
@@ -62,6 +77,23 @@ class TestMounting:
         app = Citry(autodiscover=False, extensions=[CitryDjangoExtension()])
 
         assert urlpatterns(app, "/citry")
+
+    @pytest.mark.parametrize("prefix", ["/citry", "/assets/citry/", "/"])
+    def test_the_mount_serves_the_urls_citry_builds(self, settings, client, prefix):
+        """Listed at the top of the root URLconf, the routes sit under the
+        prefix Citry builds every `src` from, so a linked file is found."""
+        app = Citry(autodiscover=False, extensions=[CitryDjangoExtension()])
+        urlconf = types.ModuleType("mounted_site_urls")
+        urlconf.urlpatterns = [*urlpatterns(app, prefix)]
+        settings.ROOT_URLCONF = urlconf
+        # Wagtail's middleware reads the database, which these requests do not need.
+        settings.MIDDLEWARE = []
+
+        html = str(interactive(app, "mounted-linked")())
+        sources = re.findall(r'<script src="([^"]+)"', html)
+
+        assert sources
+        assert all(client.get(src).status_code == 200 for src in sources)
 
     @URL_CLEANUP
     def test_the_runtime_is_served_as_a_file(self, mounted):
