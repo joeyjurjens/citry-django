@@ -32,8 +32,9 @@ def urlpatterns(app: Any, prefix: str) -> list[Any]:
 
     Without them Citry has nowhere to serve its client runtime from, so it
     inlines the whole bundle into every page, on every request. Mounted, a
-    browser fetches it once. List them in the root URLconf, not inside an
-    `include()`, because they already sit under `prefix`::
+    browser fetches it once. List them where URL paths start at the site
+    root, normally the root URLconf, because they already sit under
+    `prefix`::
 
         # urls.py
         from citry_django.urls import urlpatterns as citry_urls
@@ -51,16 +52,16 @@ def urlpatterns(app: Any, prefix: str) -> list[Any]:
             browser refuses a minified copy and the page loses its runtime.
     """
     # Checked here because the mount is the only place the setting ever
-    # applied, and URL loading runs at startup, so the project fails before
-    # it serves a page whose runtime the browser would refuse.
+    # applied. Django loads the URLconf in `check`, in `runserver`, or on the
+    # first request, so the project fails before it serves any page whose
+    # runtime the browser would refuse.
     if getattr(settings, "CITRY_MINIFY_ASSETS", False):
         raise ImproperlyConfigured(MINIFY_REMOVED)
     token = release()
     mounted = citry_urlpatterns(app, f"{prefix.rstrip('/')}/{token}")
     # The patterns sit under `prefix` and the release segment themselves, so
     # the URLs Citry builds from them and the routes Django matches cannot
-    # disagree. A project lists them at the top of its root URLconf rather
-    # than inside an include().
+    # disagree.
     segment = prefix.strip("/")
     route = f"{segment}/{token}/" if segment else f"{token}/"
     return [path(route, include([served(pattern) for pattern in mounted]))]

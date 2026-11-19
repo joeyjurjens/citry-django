@@ -765,16 +765,19 @@ from citry_django.urls import urlpatterns as citry_urls
 urlpatterns = [*citry_urls(app, "/citry"), ...]
 ```
 
-List it in the root URLconf, not inside an `include()`: the routes already
-sit under the prefix you pass, which is also where Citry points every `src`.
+List it where URL paths start at the site root, normally the root URLconf.
+The routes already sit under the prefix you pass, which is also where Citry
+points every `src`. Inside `path("citry/", include(...))` the prefix is added
+twice and every file answers 404. A project that wrapped the call that way
+for citry-django 0.3 drops the wrapper when it upgrades to 0.4.
 
 That wraps Citry's own Django routes and prepares each response the way a web
 server prepares a file, because these are not files a web server serves: they
 come from a view, so an nginx rule naming a static directory never reaches
 them. Each response gets gzip for a client that asks, an `ETag`, and
-`Cache-Control: public, max-age=31536000, immutable`. Only the routes that are
-files: Citry mounts its event endpoints beside them, and those answer per
-request.
+`Cache-Control: public, max-age=31536000, immutable`. It prepares only the
+routes that serve files. Citry's event endpoints sit beside them and answer
+each request separately, so the mount leaves them alone.
 
 Forever is safe because the mount carries a release segment:
 
