@@ -1,7 +1,7 @@
 """What a component that a Citry server event renders gets from Django.
 
-`render_inputs` gives a component that a server event re-renders what a
-region gets on the page: the `request`, Django's context processors, the
+A component that a server event re-renders gets, through `render_inputs`,
+what a region gets on the page: the `request`, Django's context processors, the
 `inject("django")` values and Django's active language. Set it as Citry's
 `_render_inputs` Events setting:
 
@@ -39,6 +39,7 @@ from __future__ import annotations
 from typing import Any
 
 from citry.ext.events import EventRequest, RenderInputs
+from django.http import HttpRequest
 
 from .context import HOST_PROVIDE
 from .engine import context_processors
@@ -90,7 +91,10 @@ def render_inputs(event_request: EventRequest) -> RenderInputs:
         same context processor values under `inject("django")`; and, when
         the app has i18n, Django's active language as the render's locale.
     """
-    request = event_request.native
+    # Only Django's own request reaches the context processors, which expect
+    # one; under another host there is nothing Django-shaped to give.
+    native = event_request.native
+    request = native if isinstance(native, HttpRequest) else None
     processors = context_processors(request)
     template_globals: dict[str, Any] = dict(processors)
     if request is not None:

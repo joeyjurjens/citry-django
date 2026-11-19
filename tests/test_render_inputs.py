@@ -116,3 +116,10 @@ def test_only_request_and_context_processors_are_given(rf):
     assert set(inputs["provides"]) == {"django", "citry_i18n"}
     processors = set(inputs["provides"]["django"])
     assert set(inputs["template_globals"]) == processors | {"request"}
+
+
+def test_a_request_that_is_not_djangos_gets_no_request_values():
+    inputs = render_inputs(EventRequest(native=object()))
+
+    assert inputs["template_globals"] == {}
+    assert inputs["provides"]["django"] == {}

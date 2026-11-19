@@ -3,7 +3,8 @@
 Citry reads a render's locale only from the `citry_i18n` provide, so without
 this every region would render in the app's default locale whatever language
 Django activated for the request. A component that a server event renders
-gets the same through `events.render_inputs`.
+gets the same when the app sets `render_inputs` as its `_render_inputs`
+Events setting (see `events.py`).
 """
 
 from __future__ import annotations
