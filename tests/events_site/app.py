@@ -72,3 +72,37 @@ class Counter(Component):
 
 
 app.register(Counter, "counter")
+
+
+class Modal(Component):
+    """An interactive component whose fill a Django template writes."""
+
+    citry = app
+
+    class Kwargs:
+        title: str = ""
+
+    class State(Kwargs):
+        pass
+
+    class Events:
+        def close(self, state: Any) -> Any:
+            return Modal(title="closed")
+
+    def template_data(self, kwargs: Any, slots: Any) -> dict[str, Any]:
+        return {"title": kwargs.title}
+
+    template = """
+        <div class="modal">
+          <h2>{{ title }}</h2>
+          <c-slot>fallback</c-slot>
+          <button
+            type="button"
+            class="close"
+            @c-click="close"
+          >x</button>
+        </div>
+    """
+
+
+app.register(Modal, "modal")

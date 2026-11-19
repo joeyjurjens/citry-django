@@ -27,6 +27,7 @@ from django.http import HttpRequest
 from django.middleware.csrf import get_token
 from django.utils.html import escape
 
+from .content import refused_content
 from .page import placed
 from .registry import deps_strategy
 
@@ -199,11 +200,19 @@ def serialized(render: Any, *, strategy: str, csp_nonce: str | None) -> str:
     itself (see `page.placed`). The "fragment" strategy writes a loader that
     Citry places itself, so it keeps Citry's own placement.
     """
-    if strategy == "fragment":
-        return render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce)
-    result = render.serialize_result(
-        deps_strategy=strategy, deps_position="separate", csp_nonce=csp_nonce
-    )
+    try:
+        if strategy == "fragment":
+            return render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce)
+        result = render.serialize_result(
+            deps_strategy=strategy, deps_position="separate", csp_nonce=csp_nonce
+        )
+    except (TypeError, ValueError) as error:
+        # Citry refuses Django output it cannot put inside a Vue app; say
+        # what to change in the Django template instead.
+        explained = refused_content(error)
+        if explained is None:
+            raise
+        raise explained from error
     return placed(result)
 
 
