@@ -13,6 +13,7 @@ from django.utils import translation
 
 from citry_django import render_inputs
 from citry_django.registry import citry_app_source
+from citry_django.urls import release
 from events_site.app import Counter, app
 
 pytestmark = pytest.mark.urls("events_site.urls")
@@ -43,7 +44,7 @@ def bump(client: Client, **headers) -> dict:
     }
     body = json.dumps({"protocol": "citry-events/1", "requestId": "r1", "calls": [call]})
     response = client.post(
-        f"/citry/ext/events/e/{Counter.class_id}/bump",
+        f"/citry/{release()}/ext/events/e/{Counter.class_id}/bump",
         data=body,
         content_type="application/citry-events+json",
         headers={"X-Citry-Events": "1", **headers},
@@ -92,7 +93,7 @@ def test_a_re_render_reads_request_context_processors_and_locale(settings):
         "bumped",
         "1",
         "de",
-        f"/citry/ext/events/e/{Counter.class_id}/bump",
+        f"/citry/{release()}/ext/events/e/{Counter.class_id}/bump",
         "False",
         "True",
     ]

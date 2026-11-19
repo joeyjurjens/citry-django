@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-from citry.contrib.django import urlpatterns as citry_urlpatterns
 from django.http import HttpResponse
 from django.template import engines
-from django.urls import include, path
+from django.urls import path
+
+from citry_django.urls import urlpatterns as citry_urls
 
 from .app import PREFIX, app
 
@@ -48,5 +49,7 @@ def fills(request):
 urlpatterns = [
     path("page/", page, name="page"),
     path("fills/", fills, name="fills"),
-    path(f"{PREFIX.strip('/')}/", include(citry_urlpatterns(app, prefix=PREFIX))),
+    # Mounted the way the README shows, so the browser loads Citry's files
+    # through citry-django's gzip wrapper.
+    *citry_urls(app, PREFIX),
 ]

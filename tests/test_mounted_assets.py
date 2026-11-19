@@ -1,3 +1,6 @@
+import base64
+import gzip
+import hashlib
 import re
 import types
 
@@ -8,7 +11,6 @@ from django.test import RequestFactory
 
 from citry_django import CitryDjangoExtension
 from citry_django.urls import release, urlpatterns
-from islands import URL_CLEANUP
 
 
 @pytest.fixture
@@ -26,6 +28,11 @@ def runtime_view(patterns):
     """
     nested = patterns[0].url_patterns
     return next(p for p in nested if "citry.js" in str(p.pattern))
+
+
+def sri(content):
+    """The `integrity` value a browser computes for `content`."""
+    return "sha384-" + base64.b64encode(hashlib.sha384(content).digest()).decode()
 
 
 def interactive(app, name):
@@ -95,16 +102,37 @@ class TestMounting:
         assert sources
         assert all(client.get(src).status_code == 200 for src in sources)
 
-    @URL_CLEANUP
-    def test_the_runtime_is_served_as_a_file(self, mounted):
-        app, _ = mounted
+    def test_the_runtime_is_served_as_a_file(self, settings, client):
+        """Citry links its runtime by a hash of its content and pins it with
+        `integrity`. The mount serves those exact bytes, gzipped or not, so
+        the browser accepts them and may keep them for good."""
+        app = Citry(autodiscover=False, extensions=[CitryDjangoExtension()])
+        urlconf = types.ModuleType("mounted_site_urls")
+        urlconf.urlpatterns = [*urlpatterns(app, "/citry")]
+        settings.ROOT_URLCONF = urlconf
+        settings.MIDDLEWARE = []
 
-        class Widget(Component):
-            citry = app
-            template = '<div x-data="{}">x</div>'
+        html = str(interactive(app, "mounted-widget")())
+        tag = re.search(
+            rf'<script src="(/citry/{release()}/citry\.[0-9a-f]{{64}}\.js)"([^>]*)>', html
+        )
+        assert tag, html
+        src, attributes = tag.groups()
+        pinned = re.search(r'integrity="(sha384-[^"]+)"', attributes)
+        assert pinned
+        assert 'crossorigin="anonymous"' in attributes
 
-        app.register(Widget, "mounted-widget")
-        assert f"/citry/{release()}/citry.js" in str(Widget())
+        plain = client.get(src)
+        zipped = client.get(src, HTTP_ACCEPT_ENCODING="gzip")
+
+        assert plain.status_code == zipped.status_code == 200
+        assert zipped["Content-Encoding"] == "gzip"
+        assert gzip.decompress(zipped.content) == plain.content
+        assert sri(plain.content) == pinned.group(1)
+        assert plain["Cache-Control"] == "public, max-age=31536000, immutable"
+        # Citry's CORS header, which the browser needs to check the integrity
+        # of a script it fetches with crossorigin="anonymous".
+        assert zipped["Access-Control-Allow-Origin"] == "*"
 
 
 class TestServing:

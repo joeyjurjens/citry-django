@@ -12,8 +12,6 @@ import json
 import re
 from dataclasses import dataclass
 
-import pytest
-
 #: The element Vue mounts on. Citry names it after the app id.
 HOST = re.compile(r'<div id="citry-vue-(?P<app>[0-9a-f]+)"')
 
@@ -54,13 +52,3 @@ def islands(html: str) -> Islands:
         configs=[json.loads(match.group("json")) for match in CONFIG.finditer(html)],
         starts=[match.group(0) for match in START.finditer(html)],
     )
-
-
-# Tests that wait for a later step of the move to Vue islands. Strict, so
-# each one fails the suite the moment it starts passing and its marker can
-# come off.
-
-#: The URL wrapper stops rewriting Citry's runtime route.
-URL_CLEANUP = pytest.mark.xfail(
-    strict=True, reason="step 7: the runtime is served under its content-hashed name"
-)

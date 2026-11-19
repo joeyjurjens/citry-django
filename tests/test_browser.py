@@ -81,7 +81,9 @@ def test_two_islands_hydrate_and_answer_server_events(live_server, browser_page)
     sync_api.expect(second.locator("button.bump")).to_have_text("second: 0")
     second.locator("button.bump").click()
     sync_api.expect(second.locator("button.bump")).to_have_text("bumped: 1")
-    sync_api.expect(first.locator(".path")).to_have_text(re.compile(r"/citry/ext/events/"))
+    sync_api.expect(first.locator(".path")).to_have_text(
+        re.compile(r"/citry/[0-9a-f]{8}/ext/events/")
+    )
 
     # Vue adopted the server HTML: no hydration mismatch, and nothing failed.
     assert problems == []
@@ -126,7 +128,9 @@ def test_fills_with_django_tags_hydrate_and_answer_server_events(live_server, br
     panel.locator("button.bump").click()
     sync_api.expect(panel.locator("button.bump")).to_have_text("1")
     sync_api.expect(panel.locator(".guide")).to_have_text("Read the guide")
-    sync_api.expect(panel.locator(".path")).to_have_text(re.compile(r"^/citry/ext/events/"))
+    sync_api.expect(panel.locator(".path")).to_have_text(
+        re.compile(r"^/citry/[0-9a-f]{8}/ext/events/")
+    )
 
     # The modal's own handler returns a new modal without the fill the page
     # wrote, so it shows its fallback.
@@ -135,4 +139,46 @@ def test_fills_with_django_tags_hydrate_and_answer_server_events(live_server, br
     sync_api.expect(modal).to_contain_text("fallback")
 
     # Vue adopted the server HTML: no hydration mismatch, and nothing failed.
+    assert problems == []
+
+
+@pytest.mark.usefixtures("events_site")
+def test_the_runtime_loads_through_the_mount_with_its_integrity(live_server, browser_page):
+    """The page links Citry's runtime by content hash with `integrity`, and
+    the browser fetches it gzipped through citry-django's mount and runs it.
+    A body that differed from the pinned bytes would be refused and leave
+    the islands unmounted."""
+    page = browser_page
+    problems: list[str] = []
+    page.on("pageerror", lambda error: problems.append(f"pageerror: {error}"))
+    page.on(
+        "console",
+        lambda message: problems.append(message.text) if message.type == "error" else None,
+    )
+    runtime: list[dict[str, str]] = []
+    page.on(
+        "response",
+        lambda response: (
+            runtime.append(response.all_headers())
+            if re.search(r"/citry/[0-9a-f]{8}/citry\.[0-9a-f]{64}\.js$", response.url)
+            else None
+        ),
+    )
+
+    response = page.goto(f"{live_server.url}/page/")
+    assert response is not None
+    assert response.ok
+    script = page.locator('script[src^="/citry/"][src*="/citry."]')
+    assert script.count() == 1
+    assert script.get_attribute("integrity").startswith("sha384-")
+    assert script.get_attribute("crossorigin") == "anonymous"
+
+    mounted = page.evaluate(
+        "() => Array.from(document.querySelectorAll('[id^=\"citry-vue-\"]'))"
+        ".map((host) => Boolean(host.__vue_app__))"
+    )
+    assert mounted == [True, True]
+    assert len(runtime) == 1
+    assert runtime[0]["content-encoding"] == "gzip"
+    assert runtime[0]["cache-control"] == "public, max-age=31536000, immutable"
     assert problems == []
