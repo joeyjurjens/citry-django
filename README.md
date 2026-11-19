@@ -24,11 +24,11 @@ changes, so you can migrate one region at a time.
 
 | | |
 |---|---|
-| Python | 3.10 - 3.14 |
+| Python | 3.11 - 3.14 |
 | Django | 5.2 LTS, 6.0, 6.1 |
-| Citry | 0.5.1 or later |
+| Citry | 1.1.0 or later, below 2 |
 
-The suite runs against the newest Citry, currently 0.5.1.
+The suite runs against the newest Citry, currently 1.1.0.
 
 ## Install
 

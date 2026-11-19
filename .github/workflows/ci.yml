@@ -22,12 +22,10 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.10", "3.11", "3.12", "3.13", "3.14"]
+        python: ["3.11", "3.12", "3.13", "3.14"]
         django: [dj52, dj60, dj61]
         exclude:
           # Django 6.0 and 6.1 need Python 3.12 or later.
-          - { python: "3.10", django: dj60 }
-          - { python: "3.10", django: dj61 }
           - { python: "3.11", django: dj60 }
           - { python: "3.11", django: dj61 }
     name: py${{ matrix.python }} / ${{ matrix.django }}
