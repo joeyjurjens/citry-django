@@ -9,7 +9,7 @@ from django.template import engines
 
 from citry_django import CitryDjangoExtension
 from citry_django.registry import citry_app_source
-from islands import NEEDS_C1, islands
+from islands import islands, runtime_scripts
 
 
 def json_script(html: str, attribute: str) -> dict:
@@ -91,33 +91,39 @@ def test_django_loop_makes_one_island_per_iteration() -> None:
     assert html.split("<body>")[0].count("<link") == 0
 
 
-@NEEDS_C1
-def test_dependency_placeholder_keeps_its_authored_position() -> None:
-    app = Citry(extensions=[CitryDjangoExtension()])
+def test_dependency_placeholder_keeps_its_authored_position(component, render_django) -> None:
+    """Islands inside a component's Django loop send their scripts to the page.
 
-    class Widget(Component):
-        citry = app
-        js = 'console.log("placed-by-placeholder")'
-        template = "<b>{{ value }}</b>"
-
-    app.register(Widget, "serialization-placeholder-widget")
-
-    class Page(Component):
-        citry = app
-        template = """
-            <main>
-              BEFORE<c-js/>MIDDLE
-              {% for value in values %}
-                <c-serialization-placeholder-widget c-value="value"/>
-              {% endfor %}
-              AFTER
-            </main>
+    Each widget is its own island, and the page writes the scripts they share
+    once, where the template's `<c-js/>` stands.
+    """
+    component(
+        "<b>{{ value }}</b>",
+        name="serialization-placeholder-widget",
+        js='console.log("placed-by-placeholder")',
+    )
+    component(
         """
+        <main>
+          {% for value in values %}
+            <c-serialization-placeholder-widget c-value="value"/>
+          {% endfor %}
+        </main>
+        """,
+        name="serialization-placeholder-page",
+    )
 
-    html = str(Page(values=["a", "b"]))
+    html = render_django(
+        "BEFORE<c-js/>MIDDLE<c-serialization-placeholder-page c-values=\"['a', 'b']\"/>AFTER"
+    )
 
     assert html.count('console.log("placed-by-placeholder")') == 1
     assert html.index('console.log("placed-by-placeholder")') < html.index("MIDDLE")
+    assert runtime_scripts(html) == 1
+    found = islands(html)
+    assert len(found) == len(found.starts) == 2
+    # Each island's own start script moves to the spot too.
+    assert html.rindex("startDocument") < html.index("MIDDLE")
 
 
 def test_a_django_tag_that_changes_a_reached_marker_fails_loudly() -> None:

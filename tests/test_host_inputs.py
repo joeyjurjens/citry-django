@@ -1,9 +1,11 @@
+import re
+
 import pytest
 from citry import Component
 from testproject.citry_app import app
 
 from citry_django.registry import citry_app_source
-from islands import NEEDS_C1
+from islands import islands, runtime_scripts
 
 #: What the component below was handed, cleared per test by the fixture.
 RECEIVED: list = []
@@ -108,16 +110,18 @@ class TestPageAssets:
         html = render_django("<c-page-css />")
         assert ".x{color:red}" in html
 
-    @NEEDS_C1
     def test_two_regions_share_one_runtime(self, component, render_django):
         """The whole reason the page places them: a runtime per region is a
-        runtime too many, and the second would re-register the first's."""
+        runtime too many. Each region with `js` is its own Vue app, which
+        keeps its own configuration block and start script."""
         component("<div>a</div>", name="page-a", css=".a{}", js="plain()")
         component("<div>b</div>", name="page-b", css=".b{}", js="plain()")
         html = render_django("<c-page-a /><p>between</p><c-page-b />")
         assert ".a{}" in html
         assert ".b{}" in html
-        assert html.count("<script") == 1
+        assert runtime_scripts(html) == 1
+        found = islands(html)
+        assert len(found) == len(found.configs) == len(found.starts) == 2
 
     def test_a_region_outside_a_page_places_its_own(self, component, render_django):
         """A page is one backend render; without one there is nothing to wait
@@ -137,7 +141,6 @@ class TestPageAssets:
         html = render_django("<head><c-css /></head><body><c-page-head /></body>")
         assert ".head{}" in html.split("</head>")[0]
 
-    @NEEDS_C1
     def test_a_nonce_does_not_stop_the_page_collecting(self, component, render_django):
         """What Citry emits depends on the request, and nothing here reads it.
 
@@ -153,7 +156,13 @@ class TestPageAssets:
         head, body = html.split("</head>")
         assert 'nonce="r4nd0m"' in head
         assert ".nonce{}" in head
-        assert body.count("<script") == 1
+        assert runtime_scripts(body) == 1
+        # Every script carries the nonce: the runtime and the island's own.
+        # (The two components are one region, so one island.)
+        scripts = re.findall(r"<script\b[^>]*>", body)
+        assert scripts
+        assert all('nonce="r4nd0m"' in tag for tag in scripts)
+        assert len(islands(body).starts) == 1
 
     def test_a_stored_region_carries_its_own_assets(self, component, render_django):
         """A region's markup stands on its own, so a host may keep it.
@@ -199,7 +208,6 @@ class TestPageAssetsNesting:
         )
         assert html.count(".shared{}") == 1
 
-    @NEEDS_C1
     def test_an_included_template_collects_into_the_same_page(self, component, render_django):
         """`{% include %}` renders its own template, not its own page.
 
@@ -216,7 +224,8 @@ class TestPageAssetsNesting:
         head = html.split("</head>")[0]
         assert ".host{}" in head
         assert ".partial{}" in head
-        assert html.count("<script") == 1
+        assert runtime_scripts(html) == 1
+        assert len(islands(html).starts) == 2
 
     def test_a_region_rendered_per_iteration_places_its_assets_once(self, component, render_django):
         """One region, rendered as many times as Django reaches it."""

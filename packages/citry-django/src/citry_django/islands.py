@@ -27,6 +27,7 @@ from django.http import HttpRequest
 from django.middleware.csrf import get_token
 from django.utils.html import escape
 
+from .page import placed
 from .registry import deps_strategy
 
 try:
@@ -169,7 +170,7 @@ def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
     strategy = deps_strategy()
     refuse_strategy(strategy)
     try:
-        html = render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce)
+        html = serialized(render, strategy=strategy, csp_nonce=csp_nonce)
     except TypeError as error:
         if OUTSIDE_SLOT_CONTENT not in str(error):
             raise
@@ -196,7 +197,22 @@ def serialize_region(render: Any, *, csp_nonce: str | None) -> tuple[str, bool]:
     # scripts, so it would do nothing in the browser.
     if island:
         refuse_strategy(strategy)
-    return render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce), island
+    return serialized(render, strategy=strategy, csp_nonce=csp_nonce), island
+
+
+def serialized(render: Any, *, strategy: str, csp_nonce: str | None) -> str:
+    """`render`'s HTML, with its asset tags beside it for the page to collect.
+
+    Citry hands the tags back apart from the HTML, so citry-django writes them
+    itself (see `page.placed`). The "fragment" strategy writes a loader that
+    Citry places itself, so it keeps Citry's own placement.
+    """
+    if strategy == "fragment":
+        return render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce)
+    result = render.serialize_result(
+        deps_strategy=strategy, deps_position="separate", csp_nonce=csp_nonce
+    )
+    return placed(result)
 
 
 def refuse_strategy(strategy: str) -> None:

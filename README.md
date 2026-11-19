@@ -269,10 +269,9 @@ Vue cannot own that content from inside a separate app. citry-django then
 raises `IslandSlotError`. Write the Django tag as `<c-if>` or `<c-for>`, so
 both components stay in one island.
 
-Each island links or inlines Citry's browser runtime and its own assets
-beside itself, so a page with several islands carries the runtime more than
-once. The browser
-runs it once. An island can update only the components inside it: a server
+A page loads Citry's browser runtime once however many islands it holds;
+see [Where a component's assets go](#where-a-components-assets-go). An
+island can update only the components inside it: a server
 event in one row cannot re-render another row. Put components that work
 together in one Citry component, so they share an island.
 
@@ -405,15 +404,15 @@ The values come from the server event's request, not from the page's:
 
 ### Where a component's assets go
 
-A Django template renders each `<c-*>` region on its own, and Citry places what
-a region collected when that region is serialized. Left alone that gives one
-`<style>` beside every component, the client runtime once per region rather
-than once per page, and no way to say the tags belong in the head.
+A Django template renders each `<c-*>` region on its own, and each region
+that needs Vue is its own Vue app, an *island*. Citry hands a region's asset
+tags back apart from its HTML, and the region writes them around its HTML:
+CSS before it, JavaScript after it. Its HTML then works on its own, which is
+what lets you store it and render it again later.
 
-So the backend opens a *page* around the outermost render. A region still
-places its own assets and keeps them, which is what lets you store its HTML and
-render it again later. The page only reads back where they are, drops what it
-has placed already, and moves them if you named a spot:
+The backend opens a *page* around the outermost render. When the render has
+finished, the page reads the tags back, writes each one once, and moves them
+if you named a spot:
 
 ```html
 <head>
@@ -425,9 +424,21 @@ has placed already, and moves them if you named a spot:
 </body>
 ```
 
-Those are Citry's own placeholders. Without them the tags stay where Citry put
-them, still deduplicated. `CITRY_COLLECT_PAGE_ASSETS = False` turns the whole
-thing off.
+A `<c-css />` or `<c-js />` names the spot when it stands in the Django
+template itself, outside any component. Without one, the tags stay beside the
+region that wrote them, still written once.
+`CITRY_COLLECT_PAGE_ASSETS = False` turns the whole thing off.
+
+The page sorts the tags into three groups:
+
+- Citry's browser runtime and its preload hints, written once per page;
+- component CSS and JavaScript, written once per page;
+- each island's own stylesheet link, configuration block and start script,
+  all kept, because each names its own island. The browser downloads a
+  stylesheet two islands link only once.
+
+In a spot, the runtime tags come first, then the component tags, then the
+island tags.
 
 Nothing in the markup refers back to the page that produced it, so a region's
 HTML stands on its own. `{% cache %}` around one works. So does a rendered
@@ -640,8 +651,12 @@ response needs somewhere to put the result, and putting it where you did not
 ask for it would be worse than not making one. Either way the page drops the
 repeats first, so a stylesheet two regions both asked for is compiled once.
 
-Any extension can do the same. The page emits `on_page_assets` once per group
-with the whole response's tags, and what it returns is what gets placed.
+Any extension can do the same. The page emits `on_page_assets` with the
+response's component tags, once for the CSS and once for the JavaScript, and
+what it returns is what gets placed. Without a spot it emits the hook once
+per region instead, with `collected=False`. The runtime and island tags never
+reach the hook: Citry's browser runtime checks their URLs and `integrity`
+attributes, so a bundle of them would break the islands.
 
 [citry-django-compressor]: packages/citry-django-compressor
 
@@ -726,8 +741,9 @@ the browser without its scripts, so a region holding one raises
 
 #### `CITRY_COLLECT_PAGE_ASSETS`
 
-Whether one response places each asset once. Off, every region places
-everything it asked for, which means the client runtime once per region.
+Whether one response places each asset once. Off, every region writes
+everything it asked for beside itself, which means the browser runtime once
+per island.
 
 Turn it off to rule the page out while debugging, or if a host of yours
 does the collecting.

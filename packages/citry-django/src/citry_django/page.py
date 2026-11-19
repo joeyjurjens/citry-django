@@ -1,12 +1,37 @@
+"""One page's Citry assets, written once and where the page wants them.
+
+A Django template renders each `<c-*>` region on its own, and each region
+that needs Vue becomes its own Vue app, an *island*. Citry hands a region's
+asset tags back apart from its HTML, in three groups:
+
+- the runtime group: Citry's browser runtime and its preload hints, the
+  same for every island;
+- the component group: component CSS and JavaScript and the files they
+  depend on;
+- the app group: one island's stylesheet, configuration block and start
+  script.
+
+A region writes each group between two comments of its own, CSS before the
+region's HTML and JavaScript after it. The region's HTML then stands on its
+own: a project may cache it or store it, and it still works on the page it
+is rendered into.
+
+When the outermost template has finished, the page reads those comments
+back. It keeps one copy of each runtime and component tag, keeps every app
+tag, and moves them to the spot a `<c-css />` or `<c-js />` in the template
+names. Without such a spot, each tag stays where its region left it. So a
+page with several islands loads the runtime once.
+"""
+
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from citry.assets import dedupe
 from django.conf import settings
 
 from .registry import get_citry_app
@@ -18,40 +43,42 @@ PREFIX = "citry-django"
 
 
 class Assets(StrEnum):
-    """The two groups Citry places, and Citry's own name for each."""
+    """Where a tag goes: CSS before a region's HTML, JavaScript after it."""
 
     CSS = "css"
     JS = "js"
 
-    @property
-    def placeholder(self) -> str:
-        """Citry's placeholder for this group, which its render fills."""
-        return f"<c-{self.value} />"
+
+class Group(StrEnum):
+    """Which of Citry's groups a block of tags came from, in page order."""
+
+    #: Citry's browser runtime. One copy per page.
+    RUNTIME = "runtime"
+    #: Component CSS and JavaScript. One copy per page, and the only group
+    #: extensions see through `on_page_assets`.
+    COMPONENT = "component"
+    #: One island's own tags. Every one is kept: each names its own app.
+    APP = "app"
 
     @property
-    def anchor(self) -> str:
-        """The closing tag Citry's own placement puts this group before."""
-        return "</head>" if self is Assets.CSS else "</body>"
+    def deduped(self) -> bool:
+        return self is not Group.APP
 
     @property
-    def trailing(self) -> bool:
-        """Whether this group goes after a region rather than before it."""
-        return self is Assets.JS
+    def result_field(self) -> str:
+        """The `SerializedRender` field Citry returns this group in."""
+        return f"{self.value}_assets"
 
 
-class Role(StrEnum):
-    """What one delimited block is for."""
+#: The role of the comment pair a `<c-css />` or `<c-js />` writes.
+SLOT = "slot"
 
-    #: What a region collected, waiting where the region left it.
-    REGION = "region"
-    #: Where the page wants them, written as `<c-css />` in a host template.
-    SLOT = "slot"
-
-
-#: One delimited block, opened by its role and closed by kind alone.
+#: One delimited block: an opening comment that names the group, the tags,
+#: and a closing comment. The content may not hold another opening comment,
+#: so a stray opening comment cannot swallow the block after it.
 BLOCK = re.compile(
-    rf"<!--{PREFIX}:(?P<kind>css|js):(?P<role>region|slot)-->"
-    rf"(?P<content>.*?)"
+    rf"<!--{PREFIX}:(?P<kind>css|js):(?P<role>runtime|component|app|{SLOT})-->"
+    rf"(?P<content>(?:(?!<!--{PREFIX}:).)*?)"
     rf"<!--{PREFIX}:(?P=kind):end-->",
     re.DOTALL,
 )
@@ -59,61 +86,47 @@ BLOCK = re.compile(
 #: One asset tag inside such a block. Only ever read over markup Citry wrote.
 TAG = re.compile(r"<(?P<name>script|style)\b[^>]*>.*?</(?P=name)>|<link\b[^>]*?>", re.DOTALL)
 
-#: A `<c-css />` or `<c-js />` a host template wrote for itself.
-PLACEHOLDER = re.compile(r"<c-(?P<kind>css|js)\b[^>]*?>")
 
-
-def opening(kind: Assets, role: Role) -> str:
-    return f"<!--{PREFIX}:{kind.value}:{role.value}-->"
+def opening(kind: Assets, role: str) -> str:
+    return f"<!--{PREFIX}:{kind.value}:{role}-->"
 
 
 def closing(kind: Assets) -> str:
     return f"<!--{PREFIX}:{kind.value}:end-->"
 
 
-def delimited(kind: Assets, role: Role, content: str) -> str:
+def delimited(kind: Assets, role: str, content: str) -> str:
     return f"{opening(kind, role)}{content}{closing(kind)}"
 
 
-class RegionSource:
-    """One region's source, with a delimited spot for each group of assets.
+def placed(result: Any) -> str:
+    """A region's or an island's HTML with its asset tags around it.
 
-    Citry fills `<c-css />` and `<c-js />` with what the render collected, so a
-    placeholder between two comments is what lets the page find those tags
-    again without reading them. That matters: what Citry emits depends on the
-    request nonce and on the security policy in force, and a page that matched
-    the tags it expected would stop matching the moment either is set.
-
-    Where the spot goes is Citry's own rule, so nothing moves by adding it: the
-    host's own placeholder if it wrote one, else before `</head>` or `</body>`,
-    else around the region.
+    `result` is what `serialize_result(deps_position="separate")` returned.
+    CSS goes before the HTML and JavaScript after it, in Citry's order:
+    runtime, then component, then app tags. While a page is open, each group
+    sits between comments so the page can find it; without a page the tags
+    are written as they are, and the HTML still works on its own.
     """
-
-    def __init__(self, source: str) -> None:
-        self.source = source
-
-    def prepared(self) -> str:
-        source = self.source
+    page_open = current_page.get() is not None
+    around: dict[Assets, list[str]] = {Assets.CSS: [], Assets.JS: []}
+    for group in Group:
+        assets = getattr(result, group.result_field)
         for kind in Assets:
-            source = self.spotted(source, kind)
-        return source
+            tags = "".join(getattr(assets, kind.value))
+            if not tags:
+                continue
+            around[kind].append(delimited(kind, group.value, tags) if page_open else tags)
+    return "".join(around[Assets.CSS]) + result.html + "".join(around[Assets.JS])
 
-    def spotted(self, source: str, kind: Assets) -> str:
-        own = self.host_placeholder(source, kind)
-        if own is not None:
-            return source.replace(own, delimited(kind, Role.SLOT, own), 1)
-        spot = delimited(kind, Role.REGION, kind.placeholder)
-        if kind.anchor in source:
-            return source.replace(kind.anchor, spot + kind.anchor, 1)
-        return source + spot if kind.trailing else spot + source
 
-    @staticmethod
-    def host_placeholder(source: str, kind: Assets) -> str | None:
-        """The `<c-css />` this source wrote itself, if it wrote one."""
-        for match in PLACEHOLDER.finditer(source):
-            if match.group("kind") == kind.value:
-                return match.group(0)
-        return None
+def slot(kind: Assets) -> str:
+    """What a `<c-css />` or `<c-js />` in a Django template writes.
+
+    An empty pair of comments that the page fills with every tag of that
+    kind. Without a page there is nothing to fill it with.
+    """
+    return "" if current_page.get() is None else delimited(kind, SLOT, "")
 
 
 class Block:
@@ -122,12 +135,13 @@ class Block:
     def __init__(self, match: re.Match) -> None:
         self.match = match
         self.kind = Assets(match.group("kind"))
-        self.role = Role(match.group("role"))
+        role = match.group("role")
+        self.group = None if role == SLOT else Group(role)
         self.kept: list[str] = []
 
     @property
     def is_slot(self) -> bool:
-        return self.role is Role.SLOT
+        return self.group is None
 
     def tags(self) -> list[str]:
         return [match.group(0) for match in TAG.finditer(self.match.group("content"))]
@@ -136,17 +150,8 @@ class Block:
 class Placement:
     """Every asset a page's regions placed, put where the page wants them.
 
-    A region delimits what Citry gave it and keeps it, so its markup stays
-    complete: a host may store that markup, cache it, and render it into a
-    later page, and this reads the stored copy exactly as it reads a fresh one.
-    Nothing here refers to the render that produced it.
-
-    Three things happen. An asset a page has already placed is dropped, which
-    is what takes the client runtime from one copy per region down to one per
-    page. When a host template wrote `<c-css />` or `<c-js />`, everything of
-    that group moves there; without one, each group stays where Citry put it.
-    And every extension gets the group as a whole, through `on_page_assets`,
-    which is where one page's worth of assets can become one file.
+    Nothing here refers to the render that produced a block, so a region
+    stored and rendered into a later page is read exactly as a fresh one.
     """
 
     def __init__(self, html: str) -> None:
@@ -156,31 +161,47 @@ class Placement:
     def resolved(self) -> str:
         if not self.blocks:
             return self.html
-        self.assign()
+        for kind in Assets:
+            self.assign(kind)
         return self.rebuilt()
 
-    def assign(self) -> None:
-        """Give every distinct tag to the one block that will carry it.
-
-        Which tags survive is Citry's own rule, `citry.assets.dedupe`: equal
-        tags are one tag, and the first one seen is the one kept. Walking the
-        blocks afterwards is only about *where* each survivor goes.
-        """
-        slots = {block.kind: block for block in reversed(self.blocks) if block.is_slot}
-        surviving = [list(dedupe(self.tags(kind))) for kind in Assets]
-        remaining = dict(zip(Assets, surviving, strict=True))
-        for block in self.blocks:
-            for tag in block.tags():
-                if tag not in remaining[block.kind]:
+    def assign(self, kind: Assets) -> None:
+        """Give every surviving tag of `kind` to the block that will carry it."""
+        blocks = [block for block in self.blocks if block.kind is kind]
+        survivors: dict[Group, list[tuple[Block, str]]] = {group: [] for group in Group}
+        for group in Group:
+            seen: set[str] = set()
+            for block in blocks:
+                if block.group is not group:
                     continue
-                remaining[block.kind].remove(tag)
-                slots.get(block.kind, block).kept.append(tag)
-        for block in self.blocks:
-            block.kept = list(rewritten(block.kind, block.kept, collected=block.is_slot))
+                for tag in block.tags():
+                    # Equal runtime and component tags are one tag, and the
+                    # first one seen is kept. Every app tag names its own app.
+                    if group.deduped and tag in seen:
+                        continue
+                    seen.add(tag)
+                    survivors[group].append((block, tag))
 
-    def tags(self, kind: Assets) -> list[str]:
-        """Every tag of one group, in the order the page holds them."""
-        return [tag for block in self.blocks if block.kind is kind for tag in block.tags()]
+        # The first spot the template named takes every tag of this kind, in
+        # Citry's order: runtime, then component, then app tags.
+        slot = next((block for block in blocks if block.is_slot), None)
+        if slot is not None:
+            components = [tag for _, tag in survivors[Group.COMPONENT]]
+            slot.kept = [
+                *(tag for _, tag in survivors[Group.RUNTIME]),
+                *rewritten(kind, components, collected=True),
+                *(tag for _, tag in survivors[Group.APP]),
+            ]
+            return
+
+        # Without a spot each tag stays in the block it came from, and an
+        # extension sees the component tags block by block.
+        for group in Group:
+            for block, tag in survivors[group]:
+                block.kept.append(tag)
+        for block in blocks:
+            if block.group is Group.COMPONENT:
+                block.kept = list(rewritten(kind, block.kept, collected=False))
 
     def rebuilt(self) -> str:
         parts: list[str] = []
@@ -195,13 +216,17 @@ class Placement:
 
 @dataclass(frozen=True)
 class PageAsset:
-    """One group of assets, as the page is about to place them.
+    """Component tags of one kind, as the page is about to place them.
 
     ``collected`` says whether this is the whole page's worth: it is, when the
-    host template named a spot for them and everything of this group is on its
-    way there. Without one they are still where Citry put them, several tags in
-    several places, and an extension that would turn them into a single file
-    has nowhere to put it.
+    host template named a spot for them and every component tag of this kind
+    is on its way there. Without one they are still where each region put
+    them, and an extension that would turn them into a single file has
+    nowhere to put it.
+
+    Only the component group reaches extensions. Citry's runtime checks the
+    URL, `integrity` and app attributes of the runtime and app tags, so an
+    extension that bundled those would break the islands.
     """
 
     kind: Assets
@@ -209,31 +234,27 @@ class PageAsset:
     collected: bool
 
 
-def rewritten(kind: Assets, tags: list[str], *, collected: bool) -> tuple[str, ...]:
+def rewritten(kind: Assets, tags: Iterable[str], *, collected: bool) -> tuple[str, ...]:
     """`tags` as this engine's extensions would have them.
 
     A hook is a Citry hook, so an extension outside this package reaches it the
     same way: define ``on_page_assets`` and return the tags to place instead.
     """
-    asset = PageAsset(kind=kind, tags=tuple(tags), collected=collected)
+    tags = tuple(tags)
+    if not tags:
+        return tags
+    asset = PageAsset(kind=kind, tags=tags, collected=collected)
     return get_citry_app().extensions.emit("on_page_assets", asset, result="map", field="tags")
 
 
 class PageAssets:
     """One page, and the Citry regions Django rendered into it.
 
-    A Django template renders each `<c-*>` region on its own, and Citry places
-    a region's assets when that region is serialized. That gave one `<style>`
-    beside every component and the client runtime once per region, with no way
-    to say the tags belong in the head.
-
     The page is a scope and holds nothing: while it is open a region delimits
     the assets Citry gave it, and closing the page reads those delimiters back.
-    A region that keeps its own assets is a region whose markup stands on its
-    own, which is what a host storing rendered HTML needs of it.
 
-    `CITRY_COLLECT_PAGE_ASSETS = False` turns it off, and every region places
-    what it asked for the way Citry would on its own.
+    `CITRY_COLLECT_PAGE_ASSETS = False` turns it off, and every region writes
+    its tags beside its own HTML.
     """
 
     @classmethod
@@ -257,11 +278,6 @@ class PageAssets:
 
     def finish(self, html: str) -> str:
         return Placement(html).resolved()
-
-
-def prepared(source: str) -> str:
-    """`source` with a delimited spot for its assets, when a page is open."""
-    return source if current_page.get() is None else RegionSource(source).prepared()
 
 
 def collected(html: str, page: PageAssets | None) -> Any:

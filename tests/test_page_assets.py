@@ -1,0 +1,144 @@
+"""How the page writes the asset tags its regions hand back.
+
+Citry returns a region's tags in three groups: the browser runtime, component
+assets, and one island's own tags. The page keeps one copy of each runtime
+and component tag, keeps every island tag, and only the component tags reach
+`on_page_assets`.
+"""
+
+from __future__ import annotations
+
+import pytest
+from citry import Citry, Component, Extension
+from citry.ext.dependencies import Script
+
+from citry_django import CitryDjangoExtension
+from citry_django.registry import citry_app_source
+from islands import islands, runtime_scripts
+
+
+class RecordPageAssets(Extension):
+    name = "record_page_assets"
+
+    def __init__(self) -> None:
+        self.seen: list = []
+
+    def on_page_assets(self, asset):
+        self.seen.append(asset)
+        return asset.tags
+
+
+@pytest.fixture
+def recorded(monkeypatch, settings):
+    """An engine with mounted routes and a recording extension, set as CITRY_APP."""
+    import testproject.citry_app as app_module
+
+    recorder = RecordPageAssets()
+    app = Citry(extensions=[CitryDjangoExtension(), recorder], secret="page-assets-" * 4)
+    app.set_mounted_prefix("/citry")
+
+    class Live(Component):
+        citry = app
+        css = ".live{color:red}"
+        js = "live()"
+        template = "<b>{{ label }}</b>"
+
+    class Other(Component):
+        citry = app
+        css = ".other{color:blue}"
+        js = "other()"
+        template = "<i>other</i>"
+
+    class Still(Component):
+        citry = app
+        css = ".still{color:green}"
+        template = "<s>still</s>"
+
+        class Dependencies:
+            js = (Script(url="https://cdn.example/still.js"),)
+
+    app.register(Live, "pa-live")
+    app.register(Other, "pa-other")
+    app.register(Still, "pa-still")
+    monkeypatch.setattr(app_module, "page_assets_app", app, raising=False)
+    settings.CITRY_APP = "testproject.citry_app:page_assets_app"
+    citry_app_source.cache_clear()
+    yield recorder
+    citry_app_source.cache_clear()
+
+
+def test_a_spot_takes_runtime_then_component_then_island_tags(recorded, render_django):
+    html = render_django(
+        "<head><c-css/></head><body>"
+        '<c-pa-live label="a"/><p>between</p><c-pa-still/><p>and</p><c-pa-other/>'
+        "<c-js/></body>"
+    )
+    head, body = html.split("</head>")
+    found = islands(html)
+
+    assert runtime_scripts(html) == 1
+    assert len(found) == len(found.configs) == len(found.starts) == 2
+    # Every tag moved to a spot: the region HTML holds only the hosts.
+    regions = body[: body.index('<script src="/citry/')]
+    assert "<script" not in regions
+    assert "<link" not in regions
+    assert "<style" not in regions
+    # Runtime, then component, then island tags, within each spot.
+    assert body.index("/citry/citry.") < body.index("cdn.example/still.js")
+    assert body.index("cdn.example/still.js") < body.index("startDocument")
+    assert head.index('rel="preload"') < head.index(".still{")
+    assert head.index(".still{") < head.index("data-citry-vue-style-app")
+    # Two islands, two stylesheet links: each island keeps its own.
+    assert head.count("data-citry-vue-style-app") == 2
+
+
+def test_extensions_see_only_component_tags(recorded, render_django):
+    render_django(
+        "<head><c-css/></head><body><c-pa-live label='a'/><p>x</p><c-pa-still/><c-js/></body>"
+    )
+
+    assert sorted(str(asset.kind) for asset in recorded.seen) == ["css", "js"]
+    assert all(asset.collected for asset in recorded.seen)
+    tags = [tag for asset in recorded.seen for tag in asset.tags]
+    assert any(".still{" in tag for tag in tags)
+    assert any("cdn.example/still.js" in tag for tag in tags)
+    # Neither the runtime nor an island's own tags.
+    assert not any("/citry/citry." in tag or "/definitions/" in tag for tag in tags)
+    assert not any("data-citry-vue" in tag for tag in tags)
+
+
+def test_without_a_spot_each_tag_stays_beside_its_region(recorded, render_django):
+    html = render_django(
+        '<c-pa-live label="a"/><c-pa-still/><p>between</p><c-pa-still/><c-pa-live label="b"/>'
+    )
+    first, second = html.split("<p>between</p>")
+
+    assert runtime_scripts(first) == 1
+    assert runtime_scripts(second) == 0
+    # The second island still has its own configuration and start script.
+    assert len(islands(second).starts) == 1
+    assert "<!--citry-django" not in html
+
+
+def test_without_a_spot_extensions_see_each_region_on_its_own(recorded, render_django):
+    html = render_django("<c-pa-still/><p>between</p><c-pa-other/><p>and</p><c-pa-still/>")
+
+    assert html.count(".still{") == 1
+    assert [len(asset.tags) for asset in recorded.seen] == [1, 1]
+    assert not any(asset.collected for asset in recorded.seen)
+
+
+def test_without_a_page_a_region_writes_its_tags_beside_it(recorded, render_django, settings):
+    settings.CITRY_COLLECT_PAGE_ASSETS = False
+    html = render_django('<c-pa-live label="a"/><p>between</p><c-pa-live label="b"/>')
+
+    assert runtime_scripts(html) == 2
+    assert "<!--citry-django" not in html
+    assert recorded.seen == []
+
+
+def test_a_spot_next_to_a_component_is_not_part_of_its_region(recorded, render_django):
+    """`<c-pa-still/><c-css/>` is one region and one spot, not one region."""
+    html = render_django("<body><p>first</p><c-pa-still/><c-css/></body>")
+
+    assert html.index("<s") < html.index(".still{")

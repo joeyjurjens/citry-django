@@ -13,6 +13,11 @@ RAW_TEXT_TAGS = frozenset({"script", "style", "textarea", "title"})
 #: Citry control-flow tags that continue the region before them.
 CONTINUATION_TAGS = frozenset({"c-elif", "c-else", "c-empty"})
 
+#: The tags that name where a page's assets go, with the kind each names. One
+#: of these at the top level of a Django template is a spot for the whole
+#: page, not a region of its own.
+SLOT_TAGS = {"c-css": "css", "c-js": "js"}
+
 
 def load_tags(source: str) -> str:
     """
@@ -65,8 +70,15 @@ class RegionRewriter:
         source_bytes = self.source.encode()
         out: list[bytes] = []
         last = 0
-        for (start, end), open_elements in zip(regions, self.open_elements(regions), strict=True):
+        spans = [(start, end) for start, end, _ in regions]
+        for (start, end, slot), open_elements in zip(
+            regions, self.open_elements(spans), strict=True
+        ):
             out.append(source_bytes[last:start])
+            if slot is not None:
+                out.append(f'{{% citryassets "{slot}" %}}'.encode())
+                last = end
+                continue
             region = (loads + source_bytes[start:end]).hex()
             # The elements the template leaves open around the region travel
             # with it, so a region that turns out to need Vue can refuse a
@@ -77,23 +89,30 @@ class RegionRewriter:
         out.append(source_bytes[last:])
         return b"".join(out).decode()
 
-    def regions(self) -> list[tuple[int, int]]:
+    def regions(self) -> list[tuple[int, int, str | None]]:
         """
-        Where the ``<c-*>`` elements are, as byte ranges.
+        Where the ``<c-*>`` elements are, as byte ranges, with the asset kind
+        of each `<c-css />` or `<c-js />` spot (None for a region).
 
         Adjacent regions separated only by whitespace are merged: splitting
         ``<c-if>...</c-if><c-else>...</c-else>`` would hand Citry a stray
         ``<c-else>``. The gap is judged on the original source, because masking
         turns a Django tag between two regions into whitespace and merging
-        across it would swallow that tag.
+        across it would swallow that tag. A spot is never merged: it stays
+        where the template wrote it.
         """
         source_bytes = self.source.encode()
-        merged: list[tuple[int, int]] = []
-        for start, end in self.scan(self.masked_source()):
-            if merged and not source_bytes[merged[-1][1] : start].decode().strip():
-                merged[-1] = (merged[-1][0], end)
+        merged: list[tuple[int, int, str | None]] = []
+        for start, end, slot in self.scan(self.masked_source()):
+            if (
+                merged
+                and slot is None
+                and merged[-1][2] is None
+                and not source_bytes[merged[-1][1] : start].decode().strip()
+            ):
+                merged[-1] = (merged[-1][0], end, None)
             else:
-                merged.append((start, end))
+                merged.append((start, end, slot))
         return merged
 
     def open_elements(self, regions: list[tuple[int, int]]) -> list[list[str]]:
@@ -171,10 +190,14 @@ class RegionRewriter:
             if chars[index].isascii():
                 chars[index] = " "
 
-    def scan(self, masked: str) -> list[tuple[int, int]]:
-        """Top-level Citry elements, without requiring valid surrounding HTML."""
+    def scan(self, masked: str) -> list[tuple[int, int, str | None]]:
+        """Top-level Citry elements, without requiring valid surrounding HTML.
+
+        Each comes with the asset kind it names when it is a `<c-css />` or
+        `<c-js />` spot, else None.
+        """
         offsets = utf8_byte_offsets(masked)
-        spans: list[tuple[int, int]] = []
+        spans: list[tuple[int, int, str | None]] = []
         index = 0
         while index < len(masked):
             if masked.startswith("<!--", index):
@@ -202,7 +225,7 @@ class RegionRewriter:
                 )
                 start = spans.pop()[0] if joins_previous else index
                 end = self.region_end(masked, start, minimum_end=tag_end)
-                spans.append((start, end))
+                spans.append((start, end, None if joins_previous else SLOT_TAGS.get(name)))
                 index = end
             elif name in RAW_TEXT_TAGS and not closing:
                 close_start = masked.lower().find(f"</{name}", tag_end)
@@ -212,7 +235,7 @@ class RegionRewriter:
                 index = len(masked) if close_end is None else close_end
             else:
                 index = tag_end
-        return [(offsets[start], offsets[end]) for start, end in spans]
+        return [(offsets[start], offsets[end], slot) for start, end, slot in spans]
 
     @staticmethod
     def tag_end(source: str, start: int) -> int | None:

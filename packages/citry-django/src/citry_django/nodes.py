@@ -20,7 +20,7 @@ from .islands import (
     request_csp_nonce,
     serialize_region,
 )
-from .page import prepared
+from .page import Assets, slot
 from .registry import context_behavior, get_citry_app
 
 
@@ -134,6 +134,16 @@ class CitryParser(Parser):
         return super().compile_filter(token)
 
 
+class CitryAssetsSlot(template.Node):
+    """A `<c-css />` or `<c-js />` in a Django template: where the page's tags go."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = Assets(kind)
+
+    def render(self, context: Any) -> str:
+        return mark_safe(slot(self.kind))
+
+
 class CitryFragment(template.Node):
     """A ``<c-*>`` region found in a Django template, rendered by Citry."""
 
@@ -197,7 +207,7 @@ class CitryFragment(template.Node):
         if locale is not None:
             provides[LOCALE_PROVIDE] = locale
         rendered = app.render_template(
-            prepared(self.source),
+            self.source,
             variables,
             template_globals=globals_ or None,
             provides=provides,

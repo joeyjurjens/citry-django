@@ -24,6 +24,19 @@ CONFIG = re.compile(r'<script type="application/json"[^>]*>(?P<json>.*?)</script
 START = re.compile(r'<script type="module"[^>]*>.*?</script>', re.S)
 
 
+#: Citry's browser runtime: inline when the app has no mounted routes, else a
+#: script loaded from its content-hashed URL.
+RUNTIME = re.compile(
+    r"<script\b[^>]*>/\* Citry interactive runtime\."
+    r'|<script\b[^>]*\bsrc="[^"]*/citry\.[0-9a-f]+\.js"'
+)
+
+
+def runtime_scripts(html: str) -> int:
+    """How many copies of Citry's browser runtime `html` loads."""
+    return len(RUNTIME.findall(html))
+
+
 @dataclass(frozen=True)
 class Islands:
     hosts: list[str]
