@@ -23,10 +23,19 @@ islands that load the same file into one tag naming every island. The page
 then moves the tags to the spot a `<c-css />` or `<c-js />` in the template
 names. Without such a spot, each tag stays where its region left it. So a
 page with several islands loads the runtime and each stylesheet once.
+
+A component block's opening comment also names, for each tag, the
+components that declared it and whether it may hold one render's data, as
+Citry reported them (`SerializedAssetEntry`). An extension such as
+citry-django-compressor reads that to tell a stylesheet every page shares
+from one holding a single render's `css_data()` values.
 """
 
 from __future__ import annotations
 
+import base64
+import binascii
+import json
 import re
 from collections.abc import Iterable
 from contextvars import ContextVar
@@ -34,7 +43,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
-from citry import SerializedAssets, combine_assets
+from citry import SerializedAssetEntry, SerializedAssets, combine_assets
 from django.conf import settings
 
 from .registry import get_citry_app
@@ -73,11 +82,13 @@ class Group(StrEnum):
 #: The role of the comment pair a `<c-css />` or `<c-js />` writes.
 SLOT = "slot"
 
-#: One delimited block: an opening comment that names the group, the tags,
-#: and a closing comment. The content may not hold another opening comment,
-#: so a stray opening comment cannot swallow the block after it.
+#: One delimited block: an opening comment that names the group and,
+#: optionally, its tags' entries (see `encoded_entries`), then the tags, and a
+#: closing comment. The content may not hold another opening comment, so a
+#: stray opening comment cannot swallow the block after it.
 BLOCK = re.compile(
-    rf"<!--{PREFIX}:(?P<kind>css|js):(?P<role>runtime|component|app|{SLOT})-->"
+    rf"<!--{PREFIX}:(?P<kind>css|js):(?P<role>runtime|component|app|{SLOT})"
+    rf"(?::(?P<entries>[A-Za-z0-9_-]+))?-->"
     rf"(?P<content>(?:(?!<!--{PREFIX}:).)*?)"
     rf"<!--{PREFIX}:(?P=kind):end-->",
     re.DOTALL,
@@ -87,16 +98,58 @@ BLOCK = re.compile(
 TAG = re.compile(r"<(?P<name>script|style)\b[^>]*>.*?</(?P=name)>|<link\b[^>]*?>", re.DOTALL)
 
 
-def opening(kind: Assets, role: str) -> str:
-    return f"<!--{PREFIX}:{kind.value}:{role}-->"
+def encoded_entries(entries: Iterable[SerializedAssetEntry]) -> str:
+    """`entries` without their tags, as text that may stand inside a comment.
+
+    The tags are already in the block, in the same order. Base64url has
+    no `>`, so the text can never end the comment early.
+    """
+    described = [[list(entry.class_ids), entry.instance] for entry in entries]
+    if not described:
+        return ""
+    data = json.dumps(described, separators=(",", ":")).encode()
+    return base64.urlsafe_b64encode(data).decode().rstrip("=")
+
+
+def decoded_entries(encoded: str, tags: list[str]) -> tuple[SerializedAssetEntry, ...]:
+    """The entries `encoded_entries` wrote for `tags`, or none when they do not fit.
+
+    The checks keep text that does not match the block's tags from attaching
+    an entry to the wrong tag.
+    """
+    if not encoded:
+        return ()
+    try:
+        described = json.loads(base64.urlsafe_b64decode(encoded + "=" * (-len(encoded) % 4)))
+    except (binascii.Error, ValueError):
+        return ()
+    if not isinstance(described, list) or len(described) != len(tags):
+        return ()
+    entries: list[SerializedAssetEntry] = []
+    for tag, item in zip(tags, described, strict=True):
+        if not (isinstance(item, list) and len(item) == 2 and isinstance(item[1], bool)):
+            return ()
+        class_ids, instance = item
+        if not (isinstance(class_ids, list) and all(isinstance(i, str) for i in class_ids)):
+            return ()
+        entries.append(SerializedAssetEntry(tag=tag, class_ids=tuple(class_ids), instance=instance))
+    return tuple(entries)
+
+
+def opening(kind: Assets, role: str, entries: str = "") -> str:
+    described = f":{entries}" if entries else ""
+    return f"<!--{PREFIX}:{kind.value}:{role}{described}-->"
 
 
 def closing(kind: Assets) -> str:
     return f"<!--{PREFIX}:{kind.value}:end-->"
 
 
-def delimited(kind: Assets, role: str, content: str) -> str:
-    return f"{opening(kind, role)}{content}{closing(kind)}"
+def delimited(
+    kind: Assets, role: str, content: str, entries: Iterable[SerializedAssetEntry] = ()
+) -> str:
+    """`content` between an opening comment and a closing comment."""
+    return f"{opening(kind, role, encoded_entries(entries))}{content}{closing(kind)}"
 
 
 def placed(result: Any) -> str:
@@ -116,7 +169,12 @@ def placed(result: Any) -> str:
             tags = "".join(getattr(assets, kind.value))
             if not tags:
                 continue
-            around[kind].append(delimited(kind, group.value, tags) if page_open else tags)
+            if not page_open:
+                around[kind].append(tags)
+                continue
+            # Only component tags reach extensions, so only they carry entries.
+            entries = getattr(assets, f"{kind.value}_entries") if group is Group.COMPONENT else ()
+            around[kind].append(delimited(kind, group.value, tags, entries))
     return "".join(around[Assets.CSS]) + result.html + "".join(around[Assets.JS])
 
 
@@ -139,6 +197,7 @@ class Block:
         self.group = None if role == SLOT else Group(role)
         self.kept: list[str] = []
         self._tags: list[str] | None = None
+        self._entries: tuple[SerializedAssetEntry, ...] | None = None
 
     @property
     def is_slot(self) -> bool:
@@ -150,9 +209,17 @@ class Block:
             self._tags = [match.group(0) for match in TAG.finditer(self.match.group("content"))]
         return self._tags
 
+    def entries(self) -> tuple[SerializedAssetEntry, ...]:
+        """What Citry said about each tag, or nothing when the block does not say."""
+        if self._entries is None:
+            self._entries = decoded_entries(self.match.group("entries") or "", self.tags())
+        return self._entries
+
     def assets(self) -> SerializedAssets:
-        """This block's tags, in the shape `combine_assets()` reads."""
-        return SerializedAssets(**{self.kind.value: tuple(self.tags())})
+        """This block's tags and entries, in the shape `combine_assets()` reads."""
+        return SerializedAssets(
+            **{self.kind.value: tuple(self.tags()), f"{self.kind.value}_entries": self.entries()}
+        )
 
 
 class Placement:
@@ -185,22 +252,24 @@ class Placement:
         # Citry's order: runtime, then component, then app tags.
         slot = next((block for block in blocks if block.is_slot), None)
         if slot is not None:
-            components = [tag for _, tag in survivors[Group.COMPONENT]]
             slot.kept = [
-                *(tag for _, tag in survivors[Group.RUNTIME]),
-                *rewritten(kind, components, collected=True),
-                *(tag for _, tag in survivors[Group.APP]),
+                *(kept.tag for kept in survivors[Group.RUNTIME]),
+                *rewritten(kind, survivors[Group.COMPONENT], collected=True),
+                *(kept.tag for kept in survivors[Group.APP]),
             ]
             return
 
         # Without a spot each tag stays in the block it came from, and an
         # extension sees the component tags block by block.
         for group in Group:
-            for block, tag in survivors[group]:
-                block.kept.append(tag)
+            if group is Group.COMPONENT:
+                continue
+            for kept in survivors[group]:
+                kept.block.kept.append(kept.tag)
         for block in blocks:
             if block.group is Group.COMPONENT:
-                block.kept = list(rewritten(kind, block.kept, collected=False))
+                mine = [kept for kept in survivors[Group.COMPONENT] if kept.block is block]
+                block.kept = list(rewritten(kind, mine, collected=False))
 
     def rebuilt(self) -> str:
         parts: list[str] = []
@@ -213,7 +282,16 @@ class Placement:
         return "".join(parts)
 
 
-def combined(kind: Assets, blocks: list[Block]) -> list[tuple[Block, str]]:
+@dataclass(frozen=True)
+class Kept:
+    """One tag the page keeps, the block it goes back to, and its entry if known."""
+
+    block: Block
+    tag: str
+    entry: SerializedAssetEntry | None
+
+
+def combined(kind: Assets, blocks: list[Block]) -> list[Kept]:
     """The tags `combine_assets()` keeps for `blocks`, each with the block it came from.
 
     Citry keeps each tag where it first appears, so a kept tag belongs to the
@@ -223,7 +301,10 @@ def combined(kind: Assets, blocks: list[Block]) -> list[tuple[Block, str]]:
     """
     if not blocks:
         return []
-    kept = getattr(combine_assets(block.assets() for block in blocks), kind.value)
+    result = combine_assets(block.assets() for block in blocks)
+    kept = getattr(result, kind.value)
+    # Citry combines entries only when every block has them.
+    entries = getattr(result, f"{kind.value}_entries") or (None,) * len(kept)
     exact = set(kept)
     supplied = {tag for block in blocks for tag in block.tags()}
     # Only the rewritten tags need the slower match below, and a page has one
@@ -235,7 +316,7 @@ def combined(kind: Assets, blocks: list[Block]) -> list[tuple[Block, str]]:
             owner = tag if tag in exact else folded_into(kind, tag, rewritten_tags)
             if owner is not None:
                 owners.setdefault(owner, block)
-    return [(owners[tag], tag) for tag in kept]
+    return [Kept(owners[tag], tag, entry) for tag, entry in zip(kept, entries, strict=True)]
 
 
 def folded_into(kind: Assets, tag: str, candidates: list[str]) -> str | None:
@@ -261,6 +342,13 @@ class PageAsset:
     them, and an extension that would turn them into a single file has
     nowhere to put it.
 
+    ``entries`` says, for each tag Citry described, which components
+    declared it and whether it may hold one render's data: a
+    `SerializedAssetEntry` whose ``tag`` is that tag. A tag with no entry
+    is one Citry could not describe, and is best treated as holding one
+    render's data. Extensions return new ``tags`` only, so an extension
+    that runs after another one finds an entry by its tag.
+
     Only the component group reaches extensions. Citry's runtime checks the
     URL, `integrity` and app attributes of the runtime and app tags, so an
     extension that bundled those would break the islands.
@@ -269,18 +357,24 @@ class PageAsset:
     kind: Assets
     tags: tuple[str, ...]
     collected: bool
+    entries: tuple[SerializedAssetEntry, ...] = ()
 
 
-def rewritten(kind: Assets, tags: Iterable[str], *, collected: bool) -> tuple[str, ...]:
-    """`tags` as this engine's extensions would have them.
+def rewritten(kind: Assets, kept: Iterable[Kept], *, collected: bool) -> tuple[str, ...]:
+    """The `kept` tags as this engine's extensions would have them.
 
     A hook is a Citry hook, so an extension outside this package reaches it the
     same way: define ``on_page_assets`` and return the tags to place instead.
     """
-    tags = tuple(tags)
-    if not tags:
-        return tags
-    asset = PageAsset(kind=kind, tags=tags, collected=collected)
+    kept = tuple(kept)
+    if not kept:
+        return ()
+    asset = PageAsset(
+        kind=kind,
+        tags=tuple(item.tag for item in kept),
+        collected=collected,
+        entries=tuple(item.entry for item in kept if item.entry is not None),
+    )
     return get_citry_app().extensions.emit("on_page_assets", asset, result="map", field="tags")
 
 

@@ -179,6 +179,19 @@ def test_a_spot_next_to_a_component_is_not_part_of_its_region(recorded, render_d
     assert html.index("<s") < html.index(".still{")
 
 
+def test_extensions_learn_which_component_declared_each_tag(recorded, render_django):
+    render_django("<head><c-css/></head><body><c-pa-still/><c-js/></body>")
+
+    entries = [entry for asset in recorded.seen for entry in asset.entries]
+    assert [entry.tag for entry in entries] == [
+        tag for asset in recorded.seen for tag in asset.tags
+    ]
+    # A class id is the class name and a hash of its import path.
+    assert len({entry.class_ids for entry in entries}) == 1
+    assert all(entry.class_ids[0].startswith("Still_") for entry in entries)
+    assert not any(entry.instance for entry in entries)
+
+
 @pytest.fixture
 def i18n_regions(monkeypatch, settings):
     """Two components that translate in the browser, on an engine with i18n."""

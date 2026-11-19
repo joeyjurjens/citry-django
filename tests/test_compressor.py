@@ -1,5 +1,6 @@
 import json
 import re
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -7,7 +8,7 @@ from compressor.css import CssCompressor
 from django.conf import settings
 from django.template import engines
 
-from citry_django_compressor import GROUPS, Kind, collecting
+from citry_django_compressor import GROUPS, Kind, PageTag, collecting
 from islands import islands, runtime_scripts
 
 
@@ -638,3 +639,52 @@ def test_an_empty_attribute_value_is_read_as_empty():
 
     assert tag.attrs == {"rel": "stylesheet", "href": "", "media": True}
     assert tag.url is None
+
+
+class TestWhatCitrySaysAboutEachTag:
+    """The compressor decides from Citry's entry for a tag, not from its markup."""
+
+    @pytest.mark.usefixtures("compressor_enabled")
+    def test_inline_dependencies_content_is_bundled(self, render_django, component):
+        """Citry reports a `Dependencies` entry as the same on every page,
+        however it is written, so inline content goes in the file too."""
+        from citry.ext.dependencies import Script, Style
+
+        component(
+            "<div>inline</div>",
+            name="entries-inline",
+            Dependencies=type(
+                "Dependencies",
+                (),
+                {
+                    "css": [Style(content=".inline-dep{color:red}")],
+                    "js": [Script(content="window.inlineDep = 1;")],
+                },
+            ),
+        )
+        html = render_django("<head><c-css /></head><body><c-entries-inline /><c-js /></body>")
+
+        assert ".inline-dep" not in html
+        assert "inlineDep" not in html
+        assert "CACHE/css" in html
+        assert "CACHE/js" in html
+
+    def test_a_tag_without_an_entry_stays_in_the_page(self):
+        """Citry could not say it is the same on every render, so it may hold
+        one render's data."""
+        from citry.ext.dependencies import Style
+
+        markup = str(Style(content=".x{}").render())
+        asset = type("Asset", (), {"kind": "css", "tags": (markup,), "entries": ()})()
+
+        assert extension().on_page_assets(asset) == (markup,)
+
+    def test_an_instance_tag_stays_in_the_page(self):
+        from citry import SerializedAssetEntry
+        from citry.ext.dependencies import Style
+
+        markup = str(Style(content=".a{}").render())
+        entry = SerializedAssetEntry(tag=markup, class_ids=("A_123456",), instance=True)
+
+        assert not extension().shareable(PageTag.read(markup, entry))
+        assert extension().shareable(PageTag.read(markup, replace(entry, instance=False)))

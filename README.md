@@ -673,9 +673,13 @@ repeats first, so a stylesheet two regions both asked for is compiled once.
 Any extension can do the same. The page emits `on_page_assets` with the
 response's component tags, once for the CSS and once for the JavaScript, and
 what it returns is what gets placed. Without a spot it emits the hook once
-per region instead, with `collected=False`. The runtime and island tags never
-reach the hook: Citry's browser runtime checks their URLs and `integrity`
-attributes, so a bundle of them would break the islands.
+per region instead, with `collected=False`. Beside the tags it passes
+`entries`: for each tag Citry described, a `SerializedAssetEntry` naming the
+components that declared it, and `instance=True` when it may hold one
+render's data, such as `css_data()` values. Bundle only tags whose entry says
+`instance=False`. The runtime and island tags never reach the hook: Citry's
+browser runtime checks their URLs and `integrity` attributes, so a bundle of
+them would break the islands.
 
 [citry-django-compressor]: packages/citry-django-compressor
 

@@ -37,11 +37,6 @@ PAGE_TAG = re.compile(
     re.DOTALL | re.IGNORECASE,
 )
 
-#: The attribute Citry writes on a component's own `<style>`, naming its
-#: class id. Only a `<style>` that carries it is a component's declared CSS;
-#: one without it holds one instance's `css_data()` values.
-CSS_CLASS_ATTR = "data-citry-css-class"
-
 
 @dataclass(frozen=True)
 class PageTag:
@@ -49,16 +44,20 @@ class PageTag:
 
     The page hands this package markup, not Citry's dependency objects, so a
     tag is read back into the few things the rules below ask of an asset: its
-    URL or content, its attributes, and the component that declared it.
+    URL or content and its attributes. What Citry said about the tag, the
+    components that declared it and whether it may hold one render's data,
+    comes with it as `entry`, a `citry.SerializedAssetEntry`, or None when
+    Citry did not describe it.
     """
 
     markup: str
     name: str
     attrs: dict[str, Any]
     content: str | None
+    entry: Any = None
 
     @classmethod
-    def read(cls, markup: str) -> PageTag | None:
+    def read(cls, markup: str, entry: Any = None) -> PageTag | None:
         """`markup` as a tag, or None when it is not one this package reads."""
         match = PAGE_TAG.fullmatch(markup.strip())
         if match is None:
@@ -67,7 +66,7 @@ class PageTag:
         for name, assigned, double, single in ATTRIBUTE.findall(match.group("attrs")):
             # `href=""` is an empty value, not a bare attribute.
             attrs[name.lower()] = html.unescape(double or single) if assigned else True
-        return cls(markup, match.group("name").lower(), attrs, match.group("content"))
+        return cls(markup, match.group("name").lower(), attrs, match.group("content"), entry)
 
     @property
     def kind(self) -> Kind:
@@ -84,9 +83,9 @@ class PageTag:
 
     @property
     def origin_class_id(self) -> str | None:
-        """The class id of the component whose own CSS this is, if it is."""
-        value = self.attrs.get(CSS_CLASS_ATTR)
-        return value if isinstance(value, str) else None
+        """The class id of the first component that declared this tag, if Citry said."""
+        class_ids = self.entry.class_ids if self.entry is not None else ()
+        return class_ids[0] if class_ids else None
 
     @property
     def is_style(self) -> bool:
@@ -344,7 +343,10 @@ class CitryCompressorExtension(Extension):
         neither render can see the other.
         """
         kind = Kind(str(asset.kind))
-        offered = [self.offered(tag, kind) for tag in asset.tags]
+        # An earlier extension may have replaced some tags, so an entry is
+        # found by its tag rather than by its position.
+        entries = {entry.tag: entry for entry in getattr(asset, "entries", ())}
+        offered = [self.offered(tag, kind, entries.get(tag)) for tag in asset.tags]
         mine = [tag.markup for tag in offered if tag is not None]
         if not mine:
             return asset.tags
@@ -359,9 +361,9 @@ class CitryCompressorExtension(Extension):
                 replacement = []
         return tuple(placed)
 
-    def offered(self, markup: str, kind: Kind) -> PageTag | None:
+    def offered(self, markup: str, kind: Kind, entry: Any = None) -> PageTag | None:
         """`markup` typed for django-compressor, or None when it is not offered."""
-        tag = PageTag.read(markup)
+        tag = PageTag.read(markup, entry)
         if tag is None or tag.kind is not kind:
             return None
         tag = self.typed(tag)
@@ -437,18 +439,18 @@ class CitryCompressorExtension(Extension):
     def shareable(self, tag: PageTag) -> bool:
         """Whether this tag is the same on every page placing the component.
 
-        A file is, unless Citry serves it from its own routes, which are not
-        in staticfiles where django-compressor reads. Inline content is only
-        when it is a component's own `<style>`, or one that declares a `type`
-        as a `Dependencies` entry does: a bare `<style>` holds one instance's
-        `css_data()` values, which would put one page's data in a file meant
-        to be shared.
+        Citry says so in the tag's entry: `instance` is False only for a
+        component's own CSS and JavaScript and its `Dependencies`. A tag
+        that may hold one render's data, such as a `<style>` with one
+        instance's `css_data()` values, or one Citry did not describe, would
+        put one page's data in a file meant to be shared, so it stays in the
+        page. A file Citry serves from its own routes stays too: those are
+        not in staticfiles, where django-compressor reads.
         """
+        if tag.entry is None or tag.entry.instance:
+            return False
         url = tag.url
-        if url:
-            prefix = self.citry.mounted_prefix
-            return not (prefix and url.startswith(prefix))
-        # A type the author declared says the content is theirs to compile.
-        return tag.name == "style" and (
-            tag.origin_class_id is not None or bool(tag.attrs.get("type"))
-        )
+        if not url:
+            return True
+        prefix = self.citry.mounted_prefix
+        return not (prefix and url.startswith(prefix))
