@@ -437,11 +437,12 @@ The page sorts the tags into three groups:
 
 - Citry's browser runtime and its preload hints, written once per page;
 - component CSS and JavaScript, written once per page;
-- each island's own stylesheet, configuration block and start script, all
-  kept, because each names its own island. With
-  [Citry's routes](#citrys-own-routes) mounted, the stylesheet is a link,
-  and the browser downloads a file two islands link only once. Without
-  them it is an inline `<style>`, repeated per island.
+- each island's own stylesheet, configuration block and start script. Every
+  configuration block and start script is kept, because each names its own
+  island. With [Citry's routes](#citrys-own-routes) mounted, the stylesheet
+  is a link, and islands that load the same file share one link that names
+  all of them. Without the routes it is an inline `<style>`, repeated per
+  island.
 
 In a spot, the runtime tags come first, then the component tags, then the
 island tags.

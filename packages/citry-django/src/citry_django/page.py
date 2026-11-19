@@ -17,10 +17,12 @@ own: a project may cache it or store it, and it still works on the page it
 is rendered into.
 
 When the outermost template has finished, the page reads those comments
-back. It keeps one copy of each runtime and component tag, keeps every app
-tag, and moves them to the spot a `<c-css />` or `<c-js />` in the template
+back and hands each group to Citry's `combine_assets()`. That keeps one copy
+of each runtime and component tag, and turns the stylesheet tags of several
+islands that load the same file into one tag naming every island. The page
+then moves the tags to the spot a `<c-css />` or `<c-js />` in the template
 names. Without such a spot, each tag stays where its region left it. So a
-page with several islands loads the runtime once.
+page with several islands loads the runtime and each stylesheet once.
 """
 
 from __future__ import annotations
@@ -32,6 +34,7 @@ from dataclasses import dataclass
 from enum import StrEnum
 from typing import Any
 
+from citry import SerializedAssets, combine_assets
 from django.conf import settings
 
 from .registry import get_citry_app
@@ -57,12 +60,9 @@ class Group(StrEnum):
     #: Component CSS and JavaScript. One copy per page, and the only group
     #: extensions see through `on_page_assets`.
     COMPONENT = "component"
-    #: One island's own tags. Every one is kept: each names its own app.
+    #: One island's own tags. Each configuration block and start script names
+    #: its own app, so all of them are kept; islands share a stylesheet tag.
     APP = "app"
-
-    @property
-    def deduped(self) -> bool:
-        return self is not Group.APP
 
     @property
     def result_field(self) -> str:
@@ -138,13 +138,21 @@ class Block:
         role = match.group("role")
         self.group = None if role == SLOT else Group(role)
         self.kept: list[str] = []
+        self._tags: list[str] | None = None
 
     @property
     def is_slot(self) -> bool:
         return self.group is None
 
     def tags(self) -> list[str]:
-        return [match.group(0) for match in TAG.finditer(self.match.group("content"))]
+        # Read once: the page asks for the same block's tags several times.
+        if self._tags is None:
+            self._tags = [match.group(0) for match in TAG.finditer(self.match.group("content"))]
+        return self._tags
+
+    def assets(self) -> SerializedAssets:
+        """This block's tags, in the shape `combine_assets()` reads."""
+        return SerializedAssets(**{self.kind.value: tuple(self.tags())})
 
 
 class Placement:
@@ -168,19 +176,10 @@ class Placement:
     def assign(self, kind: Assets) -> None:
         """Give every surviving tag of `kind` to the block that will carry it."""
         blocks = [block for block in self.blocks if block.kind is kind]
-        survivors: dict[Group, list[tuple[Block, str]]] = {group: [] for group in Group}
-        for group in Group:
-            seen: set[str] = set()
-            for block in blocks:
-                if block.group is not group:
-                    continue
-                for tag in block.tags():
-                    # Equal runtime and component tags are one tag, and the
-                    # first one seen is kept. Every app tag names its own app.
-                    if group.deduped and tag in seen:
-                        continue
-                    seen.add(tag)
-                    survivors[group].append((block, tag))
+        survivors = {
+            group: combined(kind, [block for block in blocks if block.group is group])
+            for group in Group
+        }
 
         # The first spot the template named takes every tag of this kind, in
         # Citry's order: runtime, then component, then app tags.
@@ -212,6 +211,44 @@ class Placement:
             cursor = block.match.end()
         parts.append(self.html[cursor:])
         return "".join(parts)
+
+
+def combined(kind: Assets, blocks: list[Block]) -> list[tuple[Block, str]]:
+    """The tags `combine_assets()` keeps for `blocks`, each with the block it came from.
+
+    Citry keeps each tag where it first appears, so a kept tag belongs to the
+    first block that held it. A stylesheet tag that several islands share is
+    rewritten to name all of them, so it equals none of the tags it replaced;
+    it belongs to the first block holding a tag that Citry folds into it.
+    """
+    if not blocks:
+        return []
+    kept = getattr(combine_assets(block.assets() for block in blocks), kind.value)
+    exact = set(kept)
+    supplied = {tag for block in blocks for tag in block.tags()}
+    # Only the rewritten tags need the slower match below, and a page has one
+    # per stylesheet file its islands share.
+    rewritten_tags = [tag for tag in kept if tag not in supplied]
+    owners: dict[str, Block] = {}
+    for block in blocks:
+        for tag in block.tags():
+            owner = tag if tag in exact else folded_into(kind, tag, rewritten_tags)
+            if owner is not None:
+                owners.setdefault(owner, block)
+    return [(owners[tag], tag) for tag in kept]
+
+
+def folded_into(kind: Assets, tag: str, candidates: list[str]) -> str | None:
+    """The candidate that Citry folds `tag` into, if any.
+
+    Combining a tag with the tag that replaced it gives back that one tag,
+    which is how this asks Citry rather than reading its attribute itself.
+    """
+    for candidate in candidates:
+        both = SerializedAssets(**{kind.value: (candidate, tag)})
+        if getattr(combine_assets([both]), kind.value) == (candidate,):
+            return candidate
+    return None
 
 
 @dataclass(frozen=True)

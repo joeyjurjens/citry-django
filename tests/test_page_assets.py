@@ -2,8 +2,9 @@
 
 Citry returns a region's tags in three groups: the browser runtime, component
 assets, and one island's own tags. The page keeps one copy of each runtime
-and component tag, keeps every island tag, and only the component tags reach
-`on_page_assets`.
+and component tag, keeps each island's configuration and start script, writes
+one stylesheet tag for the islands that share it, and only the component tags
+reach `on_page_assets`.
 """
 
 from __future__ import annotations
@@ -93,6 +94,37 @@ def test_a_spot_takes_runtime_then_component_then_island_tags(recorded, render_d
     assert head.index(".still{") < head.index("data-citry-vue-style-app")
     # Two islands, two stylesheet links: each island keeps its own.
     assert head.count("data-citry-vue-style-app") == 2
+
+
+#: The app ids one island stylesheet tag names.
+STYLE_APPS = re.compile(r'data-citry-vue-style-app="(?P<apps>[0-9a-f ]+)"')
+
+
+def test_islands_of_one_component_share_one_stylesheet_tag(recorded, render_django):
+    html = render_django(
+        "<head><c-css/></head><body>"
+        '<c-pa-live label="a"/><p>between</p><c-pa-live label="b"/>'
+        "<c-js/></body>"
+    )
+    head = html.split("</head>")[0]
+    found = islands(html)
+
+    assert len(found) == 2
+    # One link names both apps, so each app adopts it and it stays loaded
+    # until the last of them is gone.
+    [apps] = [match.group("apps").split(" ") for match in STYLE_APPS.finditer(head)]
+    assert sorted(apps) == sorted(found.hosts)
+
+
+def test_without_a_spot_the_shared_stylesheet_stays_with_the_first_island(recorded, render_django):
+    html = render_django('<c-pa-live label="a"/><p>between</p><c-pa-live label="b"/>')
+    first, second = html.split("<p>between</p>")
+
+    [apps] = [match.group("apps").split(" ") for match in STYLE_APPS.finditer(first)]
+    assert sorted(apps) == sorted(islands(html).hosts)
+    assert "data-citry-vue-style-app" not in second
+    # Each island keeps its own configuration and start script.
+    assert len(islands(first).starts) == len(islands(second).starts) == 1
 
 
 def test_extensions_see_only_component_tags(recorded, render_django):
