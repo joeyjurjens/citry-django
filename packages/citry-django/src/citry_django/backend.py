@@ -1,11 +1,16 @@
 from __future__ import annotations
 
+import re
+import warnings
 from typing import Any
 
+from django.conf import settings
 from django.template.backends.django import DjangoTemplates, Template
 from django.utils.safestring import mark_safe
 
+from .islands import island_ids
 from .page import PageAssets, collected
+from .partials import PartialResponseWarning, is_partial
 from .rewrite import rewrite_source
 
 TAGS_MODULE = "citry_django.templatetags.citry"
@@ -97,4 +102,39 @@ class PageTemplate(Template):
         finally:
             if page is not None:
                 page.close()
-        return mark_safe(collected(html, page))
+        html = collected(html, page)
+        # Only the outermost render is the response; a template rendered
+        # inside another one is part of that page by design.
+        if page is not None:
+            if request is None and isinstance(context, dict):
+                request = context.get("request")
+            warn_if_partial_looking(html, request)
+        return mark_safe(html)
+
+
+#: A `<body>` start tag, which only a whole page has.
+BODY = re.compile(r"<body[\s>]", re.IGNORECASE)
+
+
+def warn_if_partial_looking(html: str, request: Any) -> None:
+    """In development, warn when a page response holds an island but no `<body>`.
+
+    Such a response is usually part of a page that the browser inserts into a
+    loaded one, which citry-django could not tell from the request. Its islands
+    were then written for a whole page, and their start scripts do not run
+    when the HTML is inserted, so they show up and do nothing.
+    """
+    if not settings.DEBUG or is_partial(request) or BODY.search(html):
+        return
+    if not island_ids(html):
+        return
+    warnings.warn(
+        "This response holds a component that needs Vue but no <body>, so it "
+        "looks like part of a page. citry-django wrote it for a whole page, and "
+        "its scripts do not start when the HTML is inserted into a page that is "
+        "already loaded. If the browser inserts this response into a page, make "
+        "the request with htmx, which sends HX-Request, or set "
+        "request.citry_partial = True in the view.",
+        PartialResponseWarning,
+        stacklevel=3,
+    )

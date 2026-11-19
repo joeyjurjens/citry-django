@@ -10,13 +10,14 @@ from __future__ import annotations
 
 import json
 import re
+import warnings
 
 import django
 import pytest
 from citry import Component
 from django.template import engines
 
-from citry_django import page_csp_nonce
+from citry_django import PartialResponseWarning, page_csp_nonce
 from citry_django.events import SESSION_KEY
 from citry_django.islands import IslandStrategyError
 from citry_django.registry import citry_app_source
@@ -190,3 +191,35 @@ def test_a_partial_needs_citrys_routes(monkeypatch, settings, rf, render_django)
     make_app(monkeypatch, settings)
     with pytest.raises(IslandStrategyError, match=r"citry_django\.urls"):
         render_django("<c-live/>", request=htmx_request(rf))
+
+
+class TestTheDevelopmentWarning:
+    def test_a_page_response_without_a_body_warns(self, settings, rf, render_django):
+        settings.DEBUG = True
+        with pytest.warns(PartialResponseWarning, match="HX-Request"):
+            render_django("<c-partial-live/>", request=rf.get("/"))
+
+    @pytest.mark.parametrize(
+        "source",
+        [
+            "<body><c-partial-live/></body>",
+            "<c-partial-still/>",
+        ],
+    )
+    def test_a_whole_page_or_a_static_one_does_not(self, settings, rf, render_django, source):
+        settings.DEBUG = True
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PartialResponseWarning)
+            render_django(source, request=rf.get("/"))
+
+    def test_a_partial_does_not(self, settings, rf, render_django):
+        settings.DEBUG = True
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PartialResponseWarning)
+            render_django("<c-partial-live/>", request=htmx_request(rf))
+
+    def test_nor_does_production(self, settings, rf, render_django):
+        settings.DEBUG = False
+        with warnings.catch_warnings():
+            warnings.simplefilter("error", PartialResponseWarning)
+            render_django("<c-partial-live/>", request=rf.get("/"))

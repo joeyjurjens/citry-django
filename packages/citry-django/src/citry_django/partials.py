@@ -37,3 +37,6 @@ def is_partial(request: Any) -> bool:
     headers = getattr(request, "headers", None)
     return headers is not None and headers.get("HX-Request") == "true"
 
+
+class PartialResponseWarning(UserWarning):
+    """A response written for a whole page looks like part of one."""
