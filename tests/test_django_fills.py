@@ -284,15 +284,6 @@ app.register(NotePanel, "fill-note-panel")
 
 
 @pytest.mark.django_db
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "Citry gap: a server event's render refuses the Markup part that a Citry {{ }} in "
-        "the text of an element with a {{ }} attribute gives inside a Django block, which "
-        "the page accepts"
-    ),
-)
 def test_a_server_event_renders_a_citry_value_in_a_template_with_django_tags(render_django):
     client = Client()
     html = render_django("<c-fill-note-panel/>")
@@ -443,7 +434,7 @@ def app_configuration(html: str, class_prefix: str) -> dict:
             {},
             # Citry names the component only when it is not wrapped in a run
             # of Citry content, as a Django block wraps it here.
-            "Something that needs Vue sits inside an HTML element",
+            "needs Vue, and it sits inside an HTML element",
             id="interactive-component-inside-a-django-element",
         ),
     ],
