@@ -357,7 +357,43 @@ Django activated for the request (`get_language()`), so `tr()` follows
 does. A regional variant falls back to its base language: `en-us` uses `en`
 when the app lists only `en`. A language the app does not list renders in
 the app's default locale, and citry-django logs a warning the first time.
-A component re-rendered by a server event does not yet get the locale.
+A component a server event renders gets the locale too, once you set
+`render_inputs` (see the next section).
+
+### What a component a server event renders can read
+
+When a server event's handler returns a component, Citry renders it again
+outside any Django template, so by default it has no `request`, no context
+processor values and no locale. Pass `render_inputs` as Citry's
+`_render_inputs` Events setting:
+
+```python
+from citry_django import CitryDjangoExtension, render_inputs
+
+app = Citry(
+    extensions=[CitryDjangoExtension()],
+    extensions_defaults={"events": {"_render_inputs": render_inputs}},
+)
+```
+
+Citry then calls it once per server event, after Django's and Citry's CSRF
+checks, the State check and the handler. The component gets what a region
+gets on the page: `request` and your context processors' values as
+template globals, those values under `self.inject("django")`, and Django's
+active language as its locale.
+
+The values come from the server event's request, not from the page's:
+
+- `request.path` is the URL of Citry's event route, so a template that
+  marks the current page in a menu by its path renders differently.
+- The view's own context does not exist, so `self.inject("django")` holds
+  only the context processors' values, and `context_behavior="django"` has
+  no view context to fall back to. Pass a value the component needs from
+  the view in its `Kwargs`, and keep it in its `State`.
+- The language comes from the event request: the language cookie or
+  `Accept-Language` under `LocaleMiddleware`. The event route has no
+  language prefix, so with `i18n_patterns` it can differ from the page's
+  language. Keep the page's language in `State` if that matters.
 
 ## Assets
 

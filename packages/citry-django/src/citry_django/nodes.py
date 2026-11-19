@@ -9,7 +9,7 @@ from django.template.base import Parser
 from django.utils.safestring import mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
-from .engine import get_django_engine
+from .engine import context_processors
 from .events import remember_page_nonce
 from .i18n import LOCALE_PROVIDE, locale_context
 from .islands import (
@@ -160,7 +160,9 @@ class CitryFragment(template.Node):
         # render global because nested components need it for Django's
         # `takes_context` tags.
         request = context.get("request")
-        processors = self.context_processors(request)
+        # A host rendered through `RequestContext` has these already and
+        # `flatten` picks them up; the host's values are layered on top.
+        processors = context_processors(request)
         variables = dict(processors)
         variables.update(
             {key: value for key, value in django_scope(context).items() if isinstance(key, str)}
@@ -212,23 +214,6 @@ class CitryFragment(template.Node):
 
     def __repr__(self) -> str:
         return f"<CitryFragment {self.source[:40]!r}>"
-
-    @staticmethod
-    def context_processors(request: Any) -> dict[str, Any]:
-        """What Django's own context processors put in a template's context.
-
-        A host rendered through `RequestContext` has these already and
-        `flatten` picks them up. One rendered without it does not, and a
-        component cannot tell the difference, so they are asked for here and
-        the host's values are layered on top the way `RequestContext` layers
-        them.
-        """
-        if request is None:
-            return {}
-        values: dict[str, Any] = {}
-        for processor in get_django_engine().engine.template_context_processors:
-            values.update(processor(request))
-        return values
 
     @staticmethod
     def csp_nonce(context: Any, request: Any) -> str | None:

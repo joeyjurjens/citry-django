@@ -2,10 +2,8 @@
 
 Citry reads a render's locale only from the `citry_i18n` provide, so without
 this every region would render in the app's default locale whatever language
-Django activated for the request.
-
-TODO(E1): a component that a server event re-renders gets no locale yet.
-Citry has no public way for an app to supply that render's inputs.
+Django activated for the request. A component that a server event renders
+gets the same through `events.render_inputs`.
 """
 
 from __future__ import annotations

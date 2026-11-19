@@ -57,3 +57,18 @@ def get_django_engine() -> Any:
         "configured."
     )
     raise ImproperlyConfigured(msg)
+
+
+def context_processors(request: Any) -> dict[str, Any]:
+    """What Django's own context processors put in a template's context.
+
+    A host rendered through `RequestContext` has these already. Citry content
+    rendered without one (a region in a template rendered with a plain
+    context, or a component a server event re-renders) asks for them here.
+    """
+    if request is None:
+        return {}
+    values: dict[str, Any] = {}
+    for processor in get_django_engine().engine.template_context_processors:
+        values.update(processor(request))
+    return values
