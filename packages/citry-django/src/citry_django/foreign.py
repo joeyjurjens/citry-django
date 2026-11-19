@@ -33,10 +33,14 @@ from .registry import get_tokenizer
 
 SEGMENT_MARKER_LABEL = "CiTrY-SeGmEnT"
 
-#: Any segment marker, whatever render produced it. Used to catch a marker that
-#: outlived the render it belonged to, which a body-caching tag will do.
+#: Any segment marker as Django leaves it unescaped, whatever render produced
+#: it. Used to catch a marker that outlived the render it belonged to, which a
+#: body-caching tag will do. Escaped text that spells a marker is a value
+#: Django escaped, such as a visitor's comment, so the page shows it as text.
+#: A cached body that an escaping tag such as `{% filter force_escape %}`
+#: wraps therefore shows its stale markers as text instead of failing.
 ANY_SEGMENT_MARKER = re.compile(
-    rf"(?:<!--|&lt;!--){re.escape(SEGMENT_MARKER_LABEL)}:(?P<nonce>[0-9a-f]+):\d+(?:-->|--&gt;)"
+    rf"<!--{re.escape(SEGMENT_MARKER_LABEL)}:(?P<nonce>[0-9a-f]+):\d+-->"
 )
 
 

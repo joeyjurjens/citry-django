@@ -210,3 +210,25 @@ def test_concurrent_renders_do_not_leak(citry_app, component):
         thread.join()
 
     assert not bad, f"cross-thread leakage: {bad[0]}"
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        pytest.param("<!--CiTrY-SeGmEnT:0:0-->", id="short"),
+        pytest.param("<!--CiTrY-SeGmEnT:0123456789abcdef0123456789abcdef:3-->", id="full-length"),
+    ],
+)
+def test_text_shaped_like_an_internal_comment_is_shown_as_text(
+    render, render_vanilla, strip_cids, text
+):
+    """Data that Django escapes inside a block is only text, whatever it spells.
+
+    Citry hands Django a comment for each run of Citry content and reads it back
+    after the block renders. A value that happens to spell such a comment
+    reaches the block escaped, so it is the value's text and the page shows it,
+    as plain Django does.
+    """
+    source = '{% for c in cs %}<p>{{ c|default:"" }}</p>{% endfor %}'
+    html = strip_cids(render(source, cs=["ok", text]))
+    assert render_vanilla(source, cs=["ok", text]).strip() == html.strip()
