@@ -263,6 +263,12 @@ gives one island per row, and the `<ul>` and `<li>` stay plain HTML. A Django
 each iteration's component is the root of its own app. A Citry `<c-for>` that
 repeats an interactive component inside one island still needs `#c-key`.
 
+Such a component cannot take content that the component around it passes
+in, between its tags or in a `<c-fill>`, when that content needs Vue too:
+Vue cannot own that content from inside a separate app. citry-django then
+raises `IslandSlotError`. Write the Django tag as `<c-if>` or `<c-for>`, so
+both components stay in one island.
+
 Each island links or inlines Citry's browser runtime and its own assets
 beside itself, so a page with several islands carries the runtime more than
 once. The browser

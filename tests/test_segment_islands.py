@@ -11,7 +11,7 @@ import re
 import pytest
 from django.core.cache import cache
 
-from citry_django.islands import IslandPlacementError, IslandStrategyError
+from citry_django.islands import IslandPlacementError, IslandSlotError, IslandStrategyError
 from islands import islands
 
 
@@ -132,3 +132,20 @@ def test_a_static_component_holding_an_island_stays_static(render_django):
     assert html.count(".inner{color:green}") == 1
     # The inner section is outside the island: Vue owns only the button.
     assert html.index("class='inner'") < html.index('id="citry-vue-')
+
+
+def test_slot_content_from_outside_asks_to_migrate_to_citry(component, render_django):
+    """Vue cannot own content the outer component passed into a separate app."""
+    component(
+        '<button @click="n++">hi<c-slot/></button>',
+        name="seg-live-slot",
+        js="$component({data() { return {n: 0}; }});",
+    )
+    component(
+        "<div>{% if show %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}</div>",
+        name="seg-slot-outer",
+    )
+
+    with pytest.raises(IslandSlotError, match="Migrate that part to Citry") as caught:
+        render_django("<c-seg-slot-outer c-show='True'/>")
+    assert isinstance(caught.value, TypeError)

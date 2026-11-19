@@ -6,9 +6,10 @@ of a Django template becomes an island when something in it needs Vue, and so
 does each component that needs Vue inside a Django block of a component's
 template (see `foreign.py`).
 
-This module answers three questions for both places: did a serialize produce
-an island, may the island stand where the template put it, and may it be
-built with the configured asset strategy. The last two are refusals: a Vue
+This module answers three questions for both places: does a render become
+an island (Citry's `needs_browser_runtime()` decides), may the island stand
+where the template put it, and may it be built with the configured asset
+strategy. The last two are refusals: a Vue
 host inside a `<p>` or a `<table>`, or an island written without its
 scripts, breaks in the browser without any error, so citry-django raises
 instead.
@@ -21,7 +22,6 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from citry import CitryRender
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.middleware.csrf import get_token
@@ -34,11 +34,8 @@ try:
 except ImportError:  # Django 5.2 has no CSP middleware of its own.
     get_nonce = None
 
-# TODO(C2): once Citry has a public check of whether a render needs its
-# browser runtime, ask it and delete this pattern. Until then the mount
-# element is the only public sign of an island: the
-# `CitryRender.serialize()` docstring says Citry puts the rendered content "in
-# one element where Vue mounts", and this is how 1.0.3 writes that element.
+#: The element Vue mounts an island on. Only the placement check reads it,
+#: to find where each host stands in the region's HTML.
 VUE_HOST = re.compile(r'<div id="citry-vue-(?P<app>[0-9a-f]+)"')
 
 #: A script element, which escaped data can never write. Under the
@@ -97,11 +94,6 @@ def island_ids(html: str) -> set[str]:
     return hosts & named
 
 
-def has_island(html: str) -> bool:
-    """Whether serialized output holds a Vue app."""
-    return bool(island_ids(html))
-
-
 def island_options(citry_context: Any) -> IslandOptions:
     """The options the enclosing region provided, or what the render itself knows.
 
@@ -152,67 +144,59 @@ def request_csp_nonce(request: Any) -> str | None:
     return None if nonce is None else str(nonce)
 
 
-class IslandHtml(str):
-    """A finished island's HTML, standing in a render's parts.
-
-    A plain `str` to Citry. The type lets a Django block further out see that
-    a component already holds finished islands, so it does not turn that
-    whole component into an island again.
-    """
-
-    __slots__ = ()
+#: What Citry's refusal says when a child holds slot content its parent
+#: wrote. Citry raises a plain `TypeError` for it, so the text is the only
+#: way to tell it from any other `TypeError`.
+OUTSIDE_SLOT_CONTENT = "slot content that a component outside it wrote"
 
 
-def finished_islands(render: Any) -> set[str]:
-    """The app ids of the finished islands anywhere inside `render`."""
-    found: set[str] = set()
-    for part in render.parts:
-        if isinstance(part, IslandHtml):
-            found |= island_ids(part)
-        elif isinstance(part, CitryRender):
-            found |= finished_islands(part)
-    return found
+class IslandSlotError(TypeError):
+    """A component that needs Vue holds slot content written outside it."""
 
 
-def serialize_island(render: Any, *, csp_nonce: str | None) -> IslandHtml | None:
+def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
     """`render` serialized as its own island, or None when it needs no Vue.
 
     Used for a component inside a Django block, which has to stand on its own
     because the HTML around it is Django's. A component that needs no Vue is
     left to the enclosing serializer, which collects its assets with the rest
-    of the page, so the serialize done here to find out is discarded.
+    of the page.
     """
-    strategy = deps_strategy()
-    # Under "simple" or "ignore" Citry writes no host at all, so the only way
-    # to see that the render needed one is to ask for the scripts.
-    html = render.serialize(
-        deps_strategy=strategy if strategy in ISLAND_STRATEGIES else "document",
-        csp_nonce=csp_nonce,
-    )
-    # Islands an inner Django block already finished are copied into this
-    # output as they stand. Only an app this serialize created makes the
-    # component an island; otherwise it stays live, and its own assets are
-    # collected with the page.
-    if not island_ids(html) - finished_islands(render):
+    # Citry answers from the render alone, so a component that needs no Vue
+    # costs no serialize here.
+    if not render.needs_browser_runtime():
         return None
+    strategy = deps_strategy()
     refuse_strategy(strategy)
-    return IslandHtml(html)
+    try:
+        html = render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce)
+    except TypeError as error:
+        if OUTSIDE_SLOT_CONTENT not in str(error):
+            raise
+        raise IslandSlotError(outside_slot_message(render)) from error
+    return html
+
+
+def outside_slot_message(render: Any) -> str:
+    name = type(render.context.component).__name__
+    return (
+        f"{name} needs Vue and stands inside a Django tag, so citry-django makes it its "
+        "own Vue app. It also holds content that the component around it passed in "
+        "(between its tags or in a <c-fill>), and Vue cannot own that content in a "
+        f"separate app. Migrate that part to Citry: write the Django tag around {name} "
+        "as <c-if> or <c-for>, so both components stay in one Vue app."
+    )
 
 
 def serialize_region(render: Any, *, csp_nonce: str | None) -> tuple[str, bool]:
-    """A region's output, and whether it holds an island.
-
-    The region is serialized once, as before. Only under a strategy that
-    writes no scripts does a second serialize run, to find out whether the
-    region needed them.
-    """
+    """A region's output, and whether it is an island itself."""
+    island = render.needs_browser_runtime()
     strategy = deps_strategy()
-    html = render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce)
-    if strategy in ISLAND_STRATEGIES:
-        return html, has_island(html)
-    if has_island(render.serialize(deps_strategy="document", csp_nonce=csp_nonce)):
+    # Under "simple" or "ignore" Citry would write the island without its
+    # scripts, so it would do nothing in the browser.
+    if island:
         refuse_strategy(strategy)
-    return html, False
+    return render.serialize(deps_strategy=strategy, csp_nonce=csp_nonce), island
 
 
 def refuse_strategy(strategy: str) -> None:
