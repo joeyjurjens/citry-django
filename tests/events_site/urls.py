@@ -19,11 +19,33 @@ PAGE = """<!doctype html>
 """
 
 
+#: Interactive components whose fills hold Django tags.
+FILLS = """{% load i18n %}<!doctype html>
+<html><head><title>Fills</title><link rel="icon" href="data:,"><c-css/></head>
+<body>
+  <c-modal title="Notes">
+    <span class="hello">{% translate "Hello" %}</span>
+    {% if note %}<b class="note">{{ note }}</b>{% endif %}
+  </c-modal>
+  <c-panel/>
+  <c-js/>
+</body></html>
+"""
+
+#: What a visitor might type: Vue syntax and markup, which must stay text.
+NOTE = '{{ 1 + 1 }} <img src=x onerror="window.injected = 1"> v-html'
+
+
 def page(request):
     return HttpResponse(engines["citry"].from_string(PAGE).render({}, request))
 
 
+def fills(request):
+    return HttpResponse(engines["citry"].from_string(FILLS).render({"note": NOTE}, request))
+
+
 urlpatterns = [
-    path("page/", page),
+    path("page/", page, name="page"),
+    path("fills/", fills, name="fills"),
     path(f"{PREFIX.strip('/')}/", include(citry_urlpatterns(app, prefix=PREFIX))),
 ]

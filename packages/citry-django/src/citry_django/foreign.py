@@ -21,7 +21,7 @@ from django.utils.safestring import mark_safe
 from .engine import explain_tokenizer_disagreement, get_django_engine
 from .events import remember_page_nonce
 from .expressions import is_dotted_path
-from .islands import ensure_csrf_cookie, island_options, serialize_island
+from .islands import ensure_csrf_cookie, island_options, serialize_island, vue_children
 from .nodes import CitryParser, CitrySegment
 from .registry import get_tokenizer
 
@@ -108,43 +108,55 @@ class _BlockState:
             if was_escaped:
                 parts.append(str(escape(rendered.serialize(deps_strategy="ignore"))))
             else:
-                parts.append(self.with_islands(rendered))
+                parts.append(rendered)
             cursor = end
         if cursor < len(html):
             parts.append(html[cursor:])
-        return CitryRender(parts=parts, context=self.citry_context)
+        block = CitryRender(parts=parts, context=self.citry_context)
+        # Runs after the marker checks above, so a tag that changed, repeated
+        # or dropped a marker still fails before any island is built.
+        return self.with_islands(block)
 
-    def with_islands(self, rendered: CitryRender) -> Any:
-        """`rendered`, with each component inside it that needs Vue as its own island.
+    def with_islands(self, block: CitryRender) -> CitryRender:
+        """`block`, with the components in it that need Vue placed where they belong.
 
-        The text around a segment is Django's, so the enclosing component can
-        only be serialized as plain HTML, and a component that needs Vue cannot
-        join it. Each such component is serialized on its own instead, where it
-        stands, and its finished HTML takes its place, with its asset tags
-        between citry-django's comments for the page to collect (see
-        `page.placed`). Components that need no Vue stay live, so the
-        enclosing serializer still collects their assets with the rest.
+        The text around a segment is Django's, so Citry writes it as HTML it did
+        not compile. A component that needs Vue cannot sit inside one of its
+        elements in the same Vue app, so it becomes its own island where it
+        stands, unless a Vue app already holds the block:
 
-        Runs after the marker checks above, so a tag that changed, repeated or
-        dropped a marker still fails before any island is built.
+        - In a server event's render the component the event renders is
+          that app, so every component stays live and joins it.
+        - Inside a region, the region decides once it has rendered (see
+          `PendingIslands`), because only then is it known whether a
+          component around the block needs Vue.
+        - A component rendered straight from Python has no region above it,
+          so each component that needs Vue becomes an island now.
         """
-        if rendered.is_component_root:
-            island = serialize_island(rendered, csp_nonce=self.options.csp_nonce)
-            if island is None:
-                return rendered
-            ensure_csrf_cookie(self.options.request)
-            # A component root always has its component on the context.
-            app = rendered.context.component.citry
-            remember_page_nonce(app, self.options.request, self.options.csp_nonce)
-            return island
-        # A `<c-if>` branch, a `<c-for>` body or a fill: not a component of its
-        # own, so look inside it. These renders belong to this block alone,
-        # which makes replacing their parts in place safe.
-        rendered.parts = [
-            self.with_islands(part) if isinstance(part, CitryRender) else part
-            for part in rendered.parts
-        ]
-        return rendered
+        if self.options.inside_app:
+            return block
+        if self.options.pending is not None:
+            self.options.pending.add(block)
+            return block
+        for holder, index, child in list(vue_children(block)):
+            holder.parts[index] = self.island(child)
+        return block
+
+    def island(self, rendered: CitryRender) -> Any:
+        """`rendered` serialized as its own island, with its asset tags beside it.
+
+        The tags sit between citry-django's comments for the page to collect
+        (see `page.placed`). Components that need no Vue are never passed
+        here, so the enclosing serializer still collects their assets.
+        """
+        island = serialize_island(rendered, csp_nonce=self.options.csp_nonce)
+        if island is None:  # pragma: no cover - only renders that need Vue come here
+            return rendered
+        ensure_csrf_cookie(self.options.request)
+        # A component root always has its component on the context.
+        app = rendered.context.component.citry
+        remember_page_nonce(app, self.options.request, self.options.csp_nonce)
+        return island
 
     def reject_stale_markers(self, html: str) -> None:
         """

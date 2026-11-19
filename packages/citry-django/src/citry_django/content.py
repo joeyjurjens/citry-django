@@ -55,39 +55,39 @@ REFUSALS = (
             r"The component (?P<name>\w+), which needs Vue, "
             rf"sits inside an element of {STATIC_HTML}"
         ),
-        "{name} needs Vue, and it sits inside an HTML element that a Django template wrote, "
-        "inside an interactive component. Vue cannot place a component inside HTML it does not "
-        "compile. Migrate that part to Citry: write the element, and any Django tag around "
-        "{name}, in Citry syntax (<c-if> and <c-for> for {{% if %}} and {{% for %}}), or move "
-        "{name} out of the element.",
+        "{name} needs Vue, and it sits inside an HTML element from a template with Django "
+        "tags, inside an interactive component. Vue cannot place a component inside HTML it "
+        "does not compile. Migrate that part to Citry: write the element, and any Django tag "
+        "around {name}, in Citry syntax (<c-if> and <c-for> for {{% if %}} and {{% for %}}), "
+        "or move {name} out of the element.",
     ),
     Refusal(
         re.compile(rf"A part that needs Vue sits inside an element of {STATIC_HTML}"),
-        "Something that needs Vue sits inside an HTML element that a Django template wrote, "
-        "inside an interactive component. Vue cannot place it inside HTML it does not compile. "
-        "Migrate that part to Citry: write the element, and any Django tag around it, in "
-        "Citry syntax (<c-if> and <c-for> for {{% if %}} and {{% for %}}).",
+        "Something that needs Vue sits inside an HTML element from a template with Django "
+        "tags, inside an interactive component. Vue cannot place it inside HTML it does not "
+        "compile. Migrate that part to Citry: write the element, and any Django tag around "
+        "it, in Citry syntax (<c-if> and <c-for> for {{% if %}} and {{% for %}}).",
     ),
     Refusal(
         re.compile(rf"{STATIC_HTML} \(.*?\) holds a <script> element", re.S),
-        "A Django template wrote a <script> inside an interactive component. Vue inserts "
-        "Django's output as a block of HTML, and the browser does not run a script inserted "
-        "that way, so it would run only on the first load of the page. Move the script into "
-        "the component's js, or onto the page outside the component.",
+        "A template with Django tags wrote a <script> inside an interactive component. Vue "
+        "inserts Django's output as a block of HTML, and the browser does not run a script "
+        "inserted that way, so it would run only on the first load of the page. Move the "
+        "script into the component's js, or onto the page outside the component.",
     ),
     Refusal(
         re.compile(rf"{STATIC_HTML} \(.*?\) holds a <noscript> element", re.S),
-        "A Django template wrote a <noscript> inside an interactive component. Vue inserts "
-        "Django's output as a block of HTML that some browsers read with scripts turned off, "
-        "so they would show and run what the <noscript> holds. Move the <noscript> onto the "
-        "page outside the component.",
+        "A template with Django tags wrote a <noscript> inside an interactive component. "
+        "Vue inserts Django's output as a block of HTML that some browsers read with scripts "
+        "turned off, so they would show and run what the <noscript> holds. Move the "
+        "<noscript> onto the page outside the component.",
     ),
     Refusal(
         re.compile(rf"{STATIC_HTML} \(.*?\) cannot sit inside <", re.S),
-        "A Django template wrote HTML inside <svg>, <math>, or an element that holds only "
-        "text, such as <textarea>, inside an interactive component. Vue inserts Django's "
-        "output with the HTML parser, which reads it differently there. Write that markup in "
-        "Citry syntax, or pass the text in as a value.",
+        "A template with Django tags wrote HTML inside <svg>, <math>, or an element that "
+        "holds only text, such as <textarea>, inside an interactive component. Vue inserts "
+        "Django's output with the HTML parser, which reads it differently there. Write that "
+        "markup in Citry syntax, or pass the text in as a value.",
     ),
     Refusal(
         re.compile(

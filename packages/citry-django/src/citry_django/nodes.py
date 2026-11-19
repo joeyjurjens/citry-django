@@ -15,6 +15,7 @@ from .i18n import LOCALE_PROVIDE, locale_context
 from .islands import (
     ISLANDS_PROVIDE,
     IslandOptions,
+    PendingIslands,
     ensure_csrf_cookie,
     refuse_misplaced_islands,
     request_csp_nonce,
@@ -195,10 +196,12 @@ class CitryFragment(template.Node):
         # asset collector, say -- needs it in nested components too, where the
         # inputs above no longer reach.
         nonce = self.csp_nonce(context, request)
+        # The Django blocks inside this region wait here until it has rendered.
+        pending = PendingIslands()
         provides = {
             HOST_PROVIDE: variables,
             # Islands built inside a component's Django blocks read this.
-            ISLANDS_PROVIDE: IslandOptions(csp_nonce=nonce, request=request),
+            ISLANDS_PROVIDE: IslandOptions(csp_nonce=nonce, request=request, pending=pending),
         }
         app = get_citry_app()
         # Citry content follows the language Django activated for this
@@ -213,9 +216,12 @@ class CitryFragment(template.Node):
             provides=provides,
             origin=self.citry_origin,
         )
+        # Before the region itself: once components in its Django blocks are
+        # islands, the region may need no Vue of its own.
+        inner_islands = pending.settle(rendered, csp_nonce=nonce)
         html, island = serialize_region(rendered, csp_nonce=nonce)
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
-        if island:
+        if island or inner_islands:
             # An island may hold Events, whose calls need the CSRF cookie and,
             # for HTML a call answers with, this page's nonce.
             ensure_csrf_cookie(request)

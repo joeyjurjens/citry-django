@@ -106,3 +106,54 @@ class Modal(Component):
 
 
 app.register(Modal, "modal")
+
+
+class Help(Component):
+    """A component without Vue whose template fills a modal with Django tags."""
+
+    citry = app
+
+    template = """
+        {% load i18n %}
+        <c-modal title="Help">
+          <span class="guide">{% translate "Read the guide" %}</span>
+          {% if request %}<i class="path">{{ request.path }}</i>{% endif %}
+        </c-modal>
+    """
+
+
+class PanelState:
+    count: int = 0
+
+
+class Panel(Component):
+    """A server event re-renders this, and with it the Django tags in Help."""
+
+    citry = app
+    State = PanelState
+
+    class Kwargs:
+        count: int = 0
+
+    class Events:
+        def bump(self, state: PanelState) -> Any:
+            state.count += 1
+            return Panel(count=state.count)
+
+    def template_data(self, kwargs: Any, slots: Any) -> dict[str, Any]:
+        return {"count": kwargs.count}
+
+    template = """
+        <div class="panel">
+          <button
+            type="button"
+            class="bump"
+            @c-click="bump"
+          >{{ count }}</button>
+          <c-help />
+        </div>
+    """
+
+
+app.register(Help, "help")
+app.register(Panel, "panel")

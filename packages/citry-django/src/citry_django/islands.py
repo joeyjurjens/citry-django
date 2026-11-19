@@ -12,6 +12,10 @@ where the template put it, and may it be built with the configured asset
 strategy. The last two are refusals: a Vue host inside a `<p>` or a
 `<table>`, or an island written without its scripts, breaks in the browser
 without any error, so citry-django raises instead.
+
+Inside a region, which components in Django blocks become islands is
+decided only once the whole region has rendered (see `PendingIslands`),
+because a block cannot see whether a component around it will be a Vue app.
 """
 
 from __future__ import annotations
@@ -21,7 +25,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
-from citry import OutsideSlotContentError
+from citry import CitryRender, OutsideSlotContentError
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.middleware.csrf import get_token
@@ -77,6 +81,122 @@ class IslandOptions:
 
     csp_nonce: str | None
     request: Any = None
+    #: Inside a region: where the region's Django blocks wait for it to
+    #: decide which of their components become islands.
+    pending: PendingIslands | None = None
+    #: In a server event's render: the component the event renders is
+    #: already a Vue app, so every component in a Django block joins it.
+    inside_app: bool = False
+
+
+@dataclass(frozen=True)
+class Candidate:
+    """A component in a Django block that may become an island.
+
+    While it is a candidate, an empty string stands in its place, so the
+    question "does anything around it need Vue?" leaves it out.
+    """
+
+    holder: CitryRender
+    index: int
+    child: CitryRender
+
+    def stand_aside(self) -> None:
+        self.holder.parts[self.index] = ""
+
+    def come_back(self) -> None:
+        self.holder.parts[self.index] = self.child
+
+
+class PendingIslands:
+    """The Django blocks of one region, waiting for the region to finish.
+
+    A component that needs Vue inside a Django block becomes its own island
+    only when nothing around it is a Vue app already: an island inside
+    another Vue app would be a second app inside the first. A block renders
+    before the components around it have finished, so it cannot tell. It
+    hands its render here instead, and the region decides once it has
+    rendered completely (see `settle`).
+    """
+
+    def __init__(self) -> None:
+        # In the order the blocks finished, which puts a block inside
+        # another block's component before that outer block.
+        self.blocks: list[CitryRender] = []
+
+    def add(self, block: CitryRender) -> None:
+        self.blocks.append(block)
+
+    def settle(self, region: CitryRender, *, csp_nonce: str | None) -> bool:
+        """Turn into islands the components that stand on their own; return whether any did.
+
+        Inner blocks come first. Each component there that needs Vue on its
+        own becomes a candidate; a candidate inside it stops being one,
+        because it will be part of that component's app. Then:
+
+        - When something else in the region still needs Vue, the region is
+          one Vue app and holds every component in its blocks. Citry writes
+          the Django HTML around them as static blocks, and refuses the
+          ones it cannot (see `refused_content`).
+        - Otherwise each candidate becomes its own island. When one holds
+          slot content from outside it, it cannot stand alone, so the region
+          becomes one Vue app instead, as above.
+        """
+        candidates: list[Candidate] = []
+        for block in self.blocks:
+            for holder, index, child in vue_children(block):
+                # A candidate inside `child` is part of child's app now.
+                held = renders_in(child)
+                inside = [candidate for candidate in candidates if id(candidate.holder) in held]
+                for candidate in inside:
+                    candidate.come_back()
+                    candidates.remove(candidate)
+                candidate = Candidate(holder, index, child)
+                candidate.stand_aside()
+                candidates.append(candidate)
+        if not candidates:
+            return False
+
+        if not region.needs_browser_runtime():
+            try:
+                built = [
+                    serialize_island(candidate.child, csp_nonce=csp_nonce)
+                    for candidate in candidates
+                ]
+            except IslandSlotError:
+                pass
+            else:
+                for candidate, html in zip(candidates, built, strict=True):
+                    candidate.holder.parts[candidate.index] = html
+                return True
+        for candidate in candidates:
+            candidate.come_back()
+        return False
+
+
+def vue_children(render: CitryRender) -> Iterator[tuple[CitryRender, int, CitryRender]]:
+    """Each component that needs Vue directly inside `render`, and where it stands.
+
+    A `<c-if>` branch, a `<c-for>` body or a fill is not a component of its
+    own, so the walk looks inside it. A component is not looked inside: if
+    it needs Vue, all of it does.
+    """
+    for index, part in enumerate(render.parts):
+        if not isinstance(part, CitryRender):
+            continue
+        if not part.is_component_root:
+            yield from vue_children(part)
+        elif part.needs_browser_runtime():
+            yield render, index, part
+
+
+def renders_in(render: CitryRender) -> set[int]:
+    """The ids of `render` and of every render inside it."""
+    found = {id(render)}
+    for part in render.parts:
+        if isinstance(part, CitryRender):
+            found |= renders_in(part)
+    return found
 
 
 def island_ids(html: str) -> set[str]:

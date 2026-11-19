@@ -11,6 +11,7 @@ import re
 import pytest
 from django.core.cache import cache
 
+from citry_django.content import IslandContentError
 from citry_django.islands import IslandPlacementError, IslandSlotError, IslandStrategyError
 from islands import islands
 
@@ -134,18 +135,59 @@ def test_a_static_component_holding_an_island_stays_static(render_django):
     assert html.index("class='inner'") < html.index('id="citry-vue-')
 
 
-def test_slot_content_from_outside_asks_to_migrate_to_citry(component, render_django):
-    """Vue cannot own content the outer component passed into a separate app."""
-    component(
+@pytest.fixture
+def live_slot(component):
+    """A component that needs Vue and shows what its caller passes in."""
+    return component(
         '<button @click="n++">hi<c-slot/></button>',
         name="seg-live-slot",
         js="$component({data() { return {n: 0}; }});",
     )
+
+
+@pytest.mark.usefixtures("live_slot")
+def test_slot_content_from_outside_makes_the_region_one_app(component, render_django):
+    """The child cannot be its own app, because Vue would not own the text its
+    caller passed in, so the whole region is one Vue app and holds both."""
+    component(
+        "{% if show %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}",
+        name="seg-slot-bare",
+    )
+
+    html = render_django("<section><c-seg-slot-bare c-show='True'/></section>")
+    found = islands(html)
+
+    assert len(found) == 1
+    assert html.index('id="citry-vue-') < html.index("from outside")
+
+
+@pytest.mark.usefixtures("live_slot")
+def test_slot_content_from_outside_inside_a_django_element_asks_to_migrate(
+    component, render_django
+):
+    """As one app, the region would hold the child inside an element Vue does
+    not compile, which Citry refuses."""
     component(
         "<div>{% if show %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}</div>",
         name="seg-slot-outer",
     )
 
-    with pytest.raises(IslandSlotError, match="Migrate that part to Citry") as caught:
+    with pytest.raises(IslandContentError, match="Migrate that part to Citry") as caught:
         render_django("<c-seg-slot-outer c-show='True'/>")
+    assert "write the element, and any Django tag around" in str(caught.value)
+
+
+@pytest.mark.usefixtures("live_slot")
+def test_rendered_from_python_slot_content_from_outside_asks_to_migrate(component):
+    """Without a region there is nothing to make one app of, so the child has
+    to be its own app, which it cannot be."""
+    outer = component(
+        "<div>{% if show %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}</div>",
+        name="seg-slot-direct",
+        Kwargs=type("Kwargs", (), {"__annotations__": {"show": bool}}),
+        template_data=lambda self, kwargs, slots: {"show": kwargs.show},
+    )
+
+    with pytest.raises(IslandSlotError, match="Migrate that part to Citry") as caught:
+        str(outer(show=True))
     assert isinstance(caught.value, TypeError)
