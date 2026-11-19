@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "citry-django"
-version = "0.3.4"
+version = "0.4.0"
 description = "Citry and Django's template engines, composed: real Django tags and filters inside Citry components, and Citry components inside Django templates."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,8 +33,8 @@ classifiers = [
 ]
 
 [project.optional-dependencies]
-django-components = ["citry-django-djc"]
-compressor = ["citry-django-compressor"]
+django-components = ["citry-django-djc>=0.4.0,<0.5"]
+compressor = ["citry-django-compressor>=0.4.0,<0.5"]
 
 [project.urls]
 Repository = "https://github.com/joeyjurjens/citry-django"
