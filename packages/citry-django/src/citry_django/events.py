@@ -101,6 +101,11 @@ def refresh_page_nonce(app: Any, request: Any, nonce: str | None) -> None:
     so the kept nonce is never an earlier page's. A visitor without one gets
     no session from this.
     """
+    # Reading the session makes Django add `Vary: Cookie` to the response,
+    # so a project that has not asked for this, or a page without a nonce,
+    # never touches it.
+    if nonce is None or not remembers_page_nonce(app):
+        return
     session = getattr(request, "session", None)
     if session is None or SESSION_KEY not in session:
         return

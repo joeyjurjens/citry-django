@@ -275,6 +275,16 @@ def test_a_whole_page_without_an_island_replaces_a_kept_nonce(
     assert first.session[SESSION_KEY] == "plainNonce"
 
 
+def test_a_page_never_reads_the_session_unless_the_app_asks(
+    monkeypatch, settings, rf, render_django
+):
+    """Reading it would add `Vary: Cookie` to every page."""
+    mounted_app(monkeypatch, settings)
+    plain = page_request(rf, nonce="plainNonce")
+    render_django("<p>No island here.</p>", request=plain)
+    assert not plain.session.accessed
+
+
 def test_a_page_without_an_island_starts_no_session(monkeypatch, settings, rf, render_django):
     mounted_app(monkeypatch, settings, _csp_nonce=page_csp_nonce)
     plain = page_request(rf, nonce="plainNonce")
