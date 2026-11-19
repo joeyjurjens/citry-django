@@ -521,6 +521,15 @@ Islands that translate in the browser work the same way: each island
 carries its own messages in its configuration block, and the i18n runtime
 they share is written once.
 
+Each comment a region writes around its tags carries a signature (an
+HMAC-SHA256) of those tags,
+keyed from your `SECRET_KEY` (with `SECRET_KEY_FALLBACKS` accepted, as
+Django accepts them for its own signed values). The page moves only tags
+whose comment matches and leaves anything else that looks like one where it
+is. A spot is signed for the page that wrote it, so a `<c-css />` inside
+`{% cache %}` does not collect on a later page; the tags then stay beside
+their regions. Keep the spots outside cached blocks.
+
 Nothing in the markup refers back to the page that produced it, so a region's
 HTML stands on its own. `{% cache %}` around a region that needs no Vue
 works. So does a rendered fragment you stored and send back later, and a

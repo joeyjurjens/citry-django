@@ -29,6 +29,12 @@ components that declared it and whether it may hold one render's data, as
 Citry reported them (`SerializedAssetEntry`). An extension such as
 citry-django-compressor reads that to tell a stylesheet every page shares
 from one holding a single render's `css_data()` values.
+
+Each opening comment carries an HMAC of its block's tags and of that
+description, keyed from Django's `SECRET_KEY`. The page moves and drops only
+tags whose comment matches, so HTML that a view marks safe cannot make the
+page move or delete part of it, or pass one render's data off as shared. A
+spot's comment is signed for the one page that wrote it.
 """
 
 from __future__ import annotations
@@ -37,6 +43,7 @@ import base64
 import binascii
 import json
 import re
+import secrets
 from collections.abc import Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -45,6 +52,7 @@ from typing import Any
 
 from citry import SerializedAssetEntry, SerializedAssets, combine_assets
 from django.conf import settings
+from django.utils.crypto import constant_time_compare, salted_hmac
 
 from .registry import get_citry_app
 
@@ -82,13 +90,17 @@ class Group(StrEnum):
 #: The role of the comment pair a `<c-css />` or `<c-js />` writes.
 SLOT = "slot"
 
-#: One delimited block: an opening comment that names the group and,
-#: optionally, its tags' entries (see `encoded_entries`), then the tags, and a
-#: closing comment. The content may not hold another opening comment, so a
-#: stray opening comment cannot swallow the block after it.
+#: The context label for the key that signs the comments. Django derives the
+#: key from `SECRET_KEY` and this label, so the key is used for nothing else.
+SIGNING_LABEL = "citry_django.page.asset-comments"
+
+#: One delimited block: an opening comment that names the group, carries its
+#: signature and, optionally, its tags' entries (see `encoded_entries`), then
+#: the tags, and a closing comment. The content may not hold another opening
+#: comment, so a stray opening comment cannot swallow the block after it.
 BLOCK = re.compile(
     rf"<!--{PREFIX}:(?P<kind>css|js):(?P<role>runtime|component|app|{SLOT})"
-    rf"(?::(?P<entries>[A-Za-z0-9_-]+))?-->"
+    rf":(?P<signature>[0-9a-f]{{64}})(?::(?P<entries>[A-Za-z0-9_-]+))?-->"
     rf"(?P<content>(?:(?!<!--{PREFIX}:).)*?)"
     rf"<!--{PREFIX}:(?P=kind):end-->",
     re.DOTALL,
@@ -96,6 +108,30 @@ BLOCK = re.compile(
 
 #: One asset tag inside such a block. Only ever read over markup Citry wrote.
 TAG = re.compile(r"<(?P<name>script|style)\b[^>]*>.*?</(?P=name)>|<link\b[^>]*?>", re.DOTALL)
+
+
+def signature(message: str, secret: str | bytes | None = None) -> str:
+    """The HMAC-SHA256 of `message`, keyed from `SECRET_KEY` and our label.
+
+    `salted_hmac` hashes the label and the secret into the key, so the raw
+    `SECRET_KEY` never keys this HMAC directly.
+    """
+    return salted_hmac(SIGNING_LABEL, message, secret=secret, algorithm="sha256").hexdigest()
+
+
+def is_signed(message: str, given: str) -> bool:
+    """Whether `given` signs `message`, under the current or a fallback key.
+
+    The fallbacks keep a region stored before a key rotation working, as they
+    do for Django's own signed values.
+    """
+    secrets_ = [settings.SECRET_KEY, *getattr(settings, "SECRET_KEY_FALLBACKS", ())]
+    return any(constant_time_compare(signature(message, secret), given) for secret in secrets_)
+
+
+def signed_content(kind: Assets, role: str, content: str, entries: str = "") -> str:
+    """What a region block's signature covers: its kind, its group, its entries and its tags."""
+    return f"{kind.value}:{role}:{entries}:{content}"
 
 
 def encoded_entries(entries: Iterable[SerializedAssetEntry]) -> str:
@@ -114,8 +150,9 @@ def encoded_entries(entries: Iterable[SerializedAssetEntry]) -> str:
 def decoded_entries(encoded: str, tags: list[str]) -> tuple[SerializedAssetEntry, ...]:
     """The entries `encoded_entries` wrote for `tags`, or none when they do not fit.
 
-    The checks keep text that does not match the block's tags from attaching
-    an entry to the wrong tag.
+    Only called on a block whose signature matched, so the text is
+    citry-django's own; the checks only keep a mismatch from attaching an
+    entry to the wrong tag.
     """
     if not encoded:
         return ()
@@ -136,9 +173,18 @@ def decoded_entries(encoded: str, tags: list[str]) -> tuple[SerializedAssetEntry
     return tuple(entries)
 
 
-def opening(kind: Assets, role: str, entries: str = "") -> str:
+def signed_slot(kind: Assets, page_token: str) -> str:
+    """What a spot's signature covers: its kind and the page it was written for.
+
+    A spot holds no tags, so without the page's own random value every spot
+    of one kind would carry the same signature on every page.
+    """
+    return f"{kind.value}:{SLOT}:{page_token}"
+
+
+def opening(kind: Assets, role: str, signed: str, entries: str = "") -> str:
     described = f":{entries}" if entries else ""
-    return f"<!--{PREFIX}:{kind.value}:{role}{described}-->"
+    return f"<!--{PREFIX}:{kind.value}:{role}:{signature(signed)}{described}-->"
 
 
 def closing(kind: Assets) -> str:
@@ -146,10 +192,12 @@ def closing(kind: Assets) -> str:
 
 
 def delimited(
-    kind: Assets, role: str, content: str, entries: Iterable[SerializedAssetEntry] = ()
+    kind: Assets, group: Group, content: str, entries: Iterable[SerializedAssetEntry] = ()
 ) -> str:
-    """`content` between an opening comment and a closing comment."""
-    return f"{opening(kind, role, encoded_entries(entries))}{content}{closing(kind)}"
+    """`content` between a signed opening comment and a closing comment."""
+    encoded = encoded_entries(entries)
+    signed = signed_content(kind, group.value, content, encoded)
+    return f"{opening(kind, group.value, signed, encoded)}{content}{closing(kind)}"
 
 
 def placed(result: Any) -> str:
@@ -174,7 +222,7 @@ def placed(result: Any) -> str:
                 continue
             # Only component tags reach extensions, so only they carry entries.
             entries = getattr(assets, f"{kind.value}_entries") if group is Group.COMPONENT else ()
-            around[kind].append(delimited(kind, group.value, tags, entries))
+            around[kind].append(delimited(kind, group, tags, entries))
     return "".join(around[Assets.CSS]) + result.html + "".join(around[Assets.JS])
 
 
@@ -184,7 +232,10 @@ def slot(kind: Assets) -> str:
     An empty pair of comments that the page fills with every tag of that
     kind. Without a page there is nothing to fill it with.
     """
-    return "" if current_page.get() is None else delimited(kind, SLOT, "")
+    page = current_page.get()
+    if page is None:
+        return ""
+    return opening(kind, SLOT, signed_slot(kind, page.token)) + closing(kind)
 
 
 class Block:
@@ -229,9 +280,22 @@ class Placement:
     stored and rendered into a later page is read exactly as a fresh one.
     """
 
-    def __init__(self, html: str) -> None:
+    def __init__(self, html: str, page_token: str) -> None:
         self.html = html
-        self.blocks = [Block(match) for match in BLOCK.finditer(html)]
+        self.page_token = page_token
+        # A block whose signature does not match was not written by
+        # citry-django for this content, and is left in the page untouched.
+        self.blocks = [Block(match) for match in BLOCK.finditer(html) if self.verified(match)]
+
+    def verified(self, match: re.Match) -> bool:
+        kind = Assets(match.group("kind"))
+        role = match.group("role")
+        signed = (
+            signed_slot(kind, self.page_token)
+            if role == SLOT
+            else signed_content(kind, role, match.group("content"), match.group("entries") or "")
+        )
+        return is_signed(signed, match.group("signature"))
 
     def resolved(self) -> str:
         if not self.blocks:
@@ -407,8 +471,13 @@ class PageAssets:
     def close(self) -> None:
         current_page.set(None)
 
+    def __init__(self) -> None:
+        # Signs this page's spots, so a spot is honoured only on the page
+        # that wrote it.
+        self.token = secrets.token_hex(16)
+
     def finish(self, html: str) -> str:
-        return Placement(html).resolved()
+        return Placement(html, self.token).resolved()
 
 
 def collected(html: str, page: PageAssets | None) -> Any:

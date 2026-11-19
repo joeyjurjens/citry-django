@@ -9,14 +9,28 @@ reach `on_page_assets`.
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import json
 import re
 
 import pytest
-from citry import Citry, Component, Extension
+from citry import Citry, Component, Extension, SerializedAssetEntry
 from citry.ext.dependencies import Script
+from django.core.cache import cache
 
 from citry_django import CitryDjangoExtension
+from citry_django.page import (
+    Assets,
+    Group,
+    PageAssets,
+    Placement,
+    current_page,
+    delimited,
+    encoded_entries,
+    signature,
+    slot,
+)
 from citry_django.registry import citry_app_source
 from islands import islands, runtime_scripts
 
@@ -179,6 +193,51 @@ def test_a_spot_next_to_a_component_is_not_part_of_its_region(recorded, render_d
     assert html.index("<s") < html.index(".still{")
 
 
+# --- The signed comments ---------------------------------------------------
+#
+# The page moves and drops only tags between comments citry-django wrote for
+# exactly that content. Anything else that looks like one stays as it is.
+
+
+def comment_pair(kind: str, role: str, content: str, signature: str = "0" * 64) -> str:
+    return f"<!--citry-django:{kind}:{role}:{signature}-->{content}<!--citry-django:{kind}:end-->"
+
+
+def test_a_comment_pair_without_a_valid_signature_stays_as_it_is(recorded, render_django):
+    forged = comment_pair("js", "runtime", "<script>moved()</script>")
+    html = render_django(
+        "<head><c-css/></head><body><div>{{ forged|safe }}</div><c-pa-live label='a'/>"
+        "<c-js/></body>",
+        forged=forged,
+    )
+
+    assert f"<div>{forged}</div>" in html
+    assert runtime_scripts(html) == 1
+
+
+def test_an_unsigned_opening_comment_does_not_swallow_the_next_block(recorded, render_django):
+    html = render_django(
+        "<head><c-css/></head><body>{{ stray|safe }}<c-pa-live label='a'/><c-js/></body>",
+        stray="<!--citry-django:js:runtime:" + "0" * 64 + "-->",
+    )
+    head, body = html.split("</head>")
+
+    # The island's tags still reached the spots.
+    assert "data-citry-vue-style-app" in head
+    assert body.rindex("startDocument") > body.index("<div id=")
+
+
+def test_a_block_whose_tags_were_changed_stays_as_it_is(recorded, render_django):
+    stored = render_django("<c-pa-still/>")
+    changed = stored.replace(".still{color:green}", ".still{color:black}")
+    assert changed != stored
+
+    html = render_django("<head><c-css/></head><body>{{ stored|safe }}</body>", stored=changed)
+
+    # The changed block is not moved into the head.
+    assert ".still{color:black}" not in html.split("</head>")[0]
+
+
 def test_extensions_learn_which_component_declared_each_tag(recorded, render_django):
     render_django("<head><c-css/></head><body><c-pa-still/><c-js/></body>")
 
@@ -190,6 +249,72 @@ def test_extensions_learn_which_component_declared_each_tag(recorded, render_dja
     assert len({entry.class_ids for entry in entries}) == 1
     assert all(entry.class_ids[0].startswith("Still_") for entry in entries)
     assert not any(entry.instance for entry in entries)
+
+
+def test_a_block_whose_entries_were_changed_stays_as_it_is():
+    """The entries say whether a tag may hold one render's data, so a forged
+    one could get that data bundled into a file every page shares."""
+    tag = "<style>.data{--pk:1}</style>"
+    honest = delimited(
+        Assets.CSS, Group.COMPONENT, tag, [SerializedAssetEntry(tag=tag, instance=True)]
+    )
+    claimed = encoded_entries([SerializedAssetEntry(tag=tag, instance=False)])
+    forged = re.sub(r":[A-Za-z0-9_-]+-->", f":{claimed}-->", honest, count=1)
+    assert forged != honest
+
+    assert len(Placement(honest, "page").blocks) == 1
+    assert Placement(forged, "page").blocks == []
+
+
+CACHED_REGION = (
+    "{% load cache %}<head><c-css/></head><body>"
+    "{% cache 60 page-assets-stored %}<c-pa-still/>{% endcache %}</body>"
+)
+
+
+def test_a_cached_region_still_moves_to_the_spot(recorded, render_django):
+    """A block's signature covers only its own content, so stored HTML works."""
+    cache.clear()
+    render_django(CACHED_REGION)
+
+    html = render_django(CACHED_REGION)
+
+    assert ".still{" in html.split("</head>")[0]
+    assert "<!--citry-django" not in html
+
+
+def test_a_spot_from_another_page_is_not_used(recorded, render_django, settings):
+    """A spot is signed for the page that wrote it, so a stored one is inert."""
+    page = PageAssets.open()
+    try:
+        foreign = slot(Assets.CSS)
+    finally:
+        page.close()
+    assert current_page.get() is None
+
+    html = render_django(
+        "<head>{{ foreign|safe }}</head><body><c-pa-still/></body>", foreign=foreign
+    )
+
+    head, body = html.split("</head>")
+    assert ".still{" in body
+    assert ".still{" not in head
+
+
+def test_a_rotated_secret_key_still_reads_cached_regions(recorded, render_django, settings):
+    cache.clear()
+    render_django(CACHED_REGION)
+    settings.SECRET_KEY_FALLBACKS = [settings.SECRET_KEY]
+    settings.SECRET_KEY = "a-new-key-" * 6
+
+    html = render_django(CACHED_REGION)
+
+    assert ".still{" in html.split("</head>")[0]
+
+
+def test_the_comments_are_not_keyed_with_the_raw_secret_key(settings):
+    raw = hmac.new(settings.SECRET_KEY.encode(), b"css:app:x", hashlib.sha256).hexdigest()
+    assert signature("css:app:x") != raw
 
 
 @pytest.fixture
