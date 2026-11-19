@@ -17,13 +17,12 @@ def citryfragment(parser: template.base.Parser, token: template.base.Token) -> C
     own. It is generated, never written by hand.
     """
     bits = token.split_contents()
-    if len(bits) != 3:
-        msg = "{% citryfragment %} takes two arguments and is generated, not written by hand."
+    if len(bits) != 4:
+        msg = "{% citryfragment %} takes three arguments and is generated, not written by hand."
         raise template.TemplateSyntaxError(msg)
     try:
-        source = bytes.fromhex(bits[1].strip("\"'")).decode()
-        origin = bytes.fromhex(bits[2].strip("\"'")).decode()
+        source, origin, around = (bytes.fromhex(bit.strip("\"'")).decode() for bit in bits[1:])
     except (ValueError, UnicodeDecodeError) as exc:
         msg = f"{{% citryfragment %}} received a malformed payload: {exc}"
         raise template.TemplateSyntaxError(msg) from exc
-    return CitryFragment(source, origin)
+    return CitryFragment(source, origin, open_elements=around.split())

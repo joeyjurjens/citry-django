@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import Any
 
 from citry import collect_compiled_body_fills, render_compiled_body
@@ -9,8 +10,9 @@ from django.utils.safestring import mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
 from .engine import get_django_engine
+from .islands import refuse_misplaced_islands, serialize_region
 from .page import prepared
-from .registry import context_behavior, deps_strategy, get_citry_app
+from .registry import context_behavior, get_citry_app
 
 
 class DottedLoop(dict):
@@ -126,11 +128,21 @@ class CitryParser(Parser):
 class CitryFragment(template.Node):
     """A ``<c-*>`` region found in a Django template, rendered by Citry."""
 
-    def __init__(self, source: str, origin: str = "<django template>") -> None:
+    def __init__(
+        self,
+        source: str,
+        origin: str = "<django template>",
+        *,
+        open_elements: Iterable[str] = (),
+    ) -> None:
         self.source = source
         # Django's Parser overwrites `Node.origin` while attaching source
         # metadata, so keep Citry's string origin under a distinct name.
         self.citry_origin = origin
+        # The HTML elements the template leaves open around this region,
+        # outermost first, so an island can refuse a place the browser
+        # would move it out of.
+        self.open_elements = tuple(open_elements)
 
     def render(self, context: Any) -> str:
         # `flatten` collapses Django's context stack, so a region inside
@@ -168,11 +180,9 @@ class CitryFragment(template.Node):
             provides={HOST_PROVIDE: variables},
             origin=self.citry_origin,
         )
-        return mark_safe(
-            rendered.serialize(
-                deps_strategy=deps_strategy(), csp_nonce=self.csp_nonce(context, request)
-            )
-        )
+        html, _island = serialize_region(rendered, csp_nonce=self.csp_nonce(context, request))
+        refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
+        return mark_safe(html)
 
     def __repr__(self) -> str:
         return f"<CitryFragment {self.source[:40]!r}>"

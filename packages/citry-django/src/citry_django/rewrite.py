@@ -3,6 +3,7 @@ from __future__ import annotations
 from citry_core.template_parser import TemplateElement, parse_template
 from django.template.base import TokenType
 
+from .islands import OpenElements
 from .registry import get_tokenizer
 
 #: Elements whose body is text rather than markup, so a `<c-*>` inside one is
@@ -64,10 +65,14 @@ class RegionRewriter:
         source_bytes = self.source.encode()
         out: list[bytes] = []
         last = 0
-        for start, end in regions:
+        for (start, end), open_elements in zip(regions, self.open_elements(regions), strict=True):
             out.append(source_bytes[last:start])
             region = (loads + source_bytes[start:end]).hex()
-            out.append(f'{{% citryfragment "{region}" "{origin}" %}}'.encode())
+            # The elements the template leaves open around the region travel
+            # with it, so a region that turns out to need Vue can refuse a
+            # place where the browser would move its host element.
+            around = " ".join(open_elements).encode().hex()
+            out.append(f'{{% citryfragment "{region}" "{origin}" "{around}" %}}'.encode())
             last = end
         out.append(source_bytes[last:])
         return b"".join(out).decode()
@@ -90,6 +95,24 @@ class RegionRewriter:
             else:
                 merged.append((start, end))
         return merged
+
+    def open_elements(self, regions: list[tuple[int, int]]) -> list[list[str]]:
+        """The HTML elements open where each region starts, outermost first.
+
+        Read from the masked source, so a Django tag never counts as markup.
+        A tag Django writes conditionally counts as written, which errs
+        towards refusing: `{% if %}<p>{% endif %}` may leave a `<p>` open.
+        The region's own markup is skipped, since Citry closes what it opens.
+        """
+        masked = self.masked_source().encode()
+        state = OpenElements()
+        found: list[list[str]] = []
+        last = 0
+        for start, end in regions:
+            state.feed(masked[last:start].decode())
+            found.append(list(state.stack))
+            last = end
+        return found
 
     def masked_source(self) -> str:
         """

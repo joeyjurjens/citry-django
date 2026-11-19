@@ -641,6 +641,11 @@ What a `<c-*>` region serializes, using Citry's own names:
 | `"simple"` | The tags alone. For an email or a static page, where per-instance JS would have nothing to run against. |
 | `"ignore"` | Nothing. Only when something downstream collects the assets; otherwise the page loads unstyled. |
 
+`"simple"` and `"ignore"` suit static pages only. A component that needs Vue
+(one with `js_data()`, `Events`, Vue bindings or its own `js`) does nothing in
+the browser without its scripts, so a region holding one raises
+`IslandStrategyError` under either value.
+
 #### `CITRY_COLLECT_PAGE_ASSETS`
 
 Whether one response places each asset once. Off, every region places
@@ -715,6 +720,30 @@ class Sidebar(Component):
 
 A `<c-*>` region in a *Django* template is unaffected either way, since it
 renders to finished HTML before the cache tag ever sees it.
+
+### A component that needs Vue cannot stand inside `<p>`, a table or `<select>`
+
+Citry hands a component that needs Vue to Vue as its own app, an *island*,
+and Vue mounts it on a `<div>` where the component stood. The browser closes
+a `<p>` before a `<div>`, moves a `<div>` out of a table unless it sits in a
+cell, drops one inside a `<select>`, and leaves SVG or MathML for it. The
+component would show up somewhere else, or not at all, so citry-django raises
+`IslandPlacementError` instead:
+
+```html
+{# IslandPlacementError: the component needs Vue #}
+<p>Hello <c-live-badge/></p>
+<table><tr><c-live-cell/></tr></table>
+```
+
+Move the enclosing element into the component's own template, or move the
+component out of it. A `<li>` in a `<ul>`, a `<td>`, a `<div>` and most other
+elements are fine. A component that does not need Vue may stand anywhere.
+
+The check reads the template the region is written in, so a `<p>` that only
+opens under a Django condition still counts. It does not see an element that
+an including or parent template opened around an `{% include %}` or a
+`{% block %}`.
 
 ### A Django block cannot straddle a region boundary
 
