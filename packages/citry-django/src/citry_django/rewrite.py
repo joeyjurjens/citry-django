@@ -99,12 +99,12 @@ class RegionRewriter:
     def open_elements(self, regions: list[tuple[int, int]]) -> list[list[str]]:
         """The HTML elements open where each region starts, outermost first.
 
-        Read from the masked source, so a Django tag never counts as markup.
-        A tag Django writes conditionally counts as written, which errs
-        towards refusing: `{% if %}<p>{% endif %}` may leave a `<p>` open.
-        The region's own markup is skipped, since Citry closes what it opens.
+        Read from the markup Django writes as it stands in the source, so a
+        `<p>` inside `{% if %}` counts as written, unless another branch
+        opens an element that closes it. The region's own markup is skipped,
+        since Citry closes what it opens.
         """
-        masked = self.masked_source().encode()
+        masked = self.markup_source().encode()
         state = OpenElements()
         found: list[list[str]] = []
         last = 0
@@ -113,6 +113,29 @@ class RegionRewriter:
             found.append(list(state.stack))
             last = end
         return found
+
+    def markup_source(self) -> str:
+        """The HTML a Django template writes, every offset kept.
+
+        Django's tags are blanked, and so is the body of `{% comment %}`,
+        which Django never writes. The body of `{% verbatim %}` stays:
+        Django writes it as it stands, so its tags are part of the page.
+        """
+        chars = list(self.source)
+        comment_from: int | None = None
+        for token in get_tokenizer()(self.source):
+            start, end = token.position
+            if token.token_type is TokenType.BLOCK:
+                command = token.contents.split()[:1]
+                if command == ["comment"]:
+                    comment_from = start
+                elif command == ["endcomment"] and comment_from is not None:
+                    self.blank(chars, comment_from, end)
+                    comment_from = None
+                    continue
+            if comment_from is None and token.token_type is not TokenType.TEXT:
+                self.blank(chars, start, end)
+        return "".join(chars)
 
     def masked_source(self) -> str:
         """

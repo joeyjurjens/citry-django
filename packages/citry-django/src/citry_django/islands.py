@@ -36,7 +36,14 @@ except ImportError:  # Django 5.2 has no CSP middleware of its own.
 # element is the only public sign of an island: the
 # `CitryRender.serialize()` docstring says Citry puts the rendered content "in
 # one element where Vue mounts", and this is how 1.0.3 writes that element.
-VUE_HOST = re.compile(r'<div id="citry-vue-[0-9a-f]+"')
+VUE_HOST = re.compile(r'<div id="citry-vue-(?P<app>[0-9a-f]+)"')
+
+#: A script element, which escaped data can never write. Under the
+#: "document" strategy Citry names the app id in the configuration block's
+#: opening tag; under "fragment", only as `"appId"` in its JSON.
+SCRIPT = re.compile(r"<script\b(?P<attrs>[^>]*)>(?P<body>.*?)</script>", re.S | re.I)
+SCRIPT_APP_ATTR = re.compile(r'="([0-9a-f]+)"')
+SCRIPT_APP_JSON = re.compile(r'"appId":"([0-9a-f]+)"')
 
 #: The `CITRY_DEPS_STRATEGY` values that write an island's scripts. The others
 #: write the HTML alone, and the interactive part then silently does nothing.
@@ -69,9 +76,26 @@ class IslandOptions:
     csp_nonce: str | None
 
 
+def island_ids(html: str) -> set[str]:
+    """The app ids of the Vue apps in serialized output.
+
+    A host element counts only when a script element names its app id too.
+    A component may write `id="citry-vue-..."` from data, which Django or
+    Citry escapes as a value, but data cannot write a `<script>` element.
+    """
+    hosts = {match.group("app") for match in VUE_HOST.finditer(html)}
+    if not hosts:
+        return set()
+    named: set[str] = set()
+    for match in SCRIPT.finditer(html):
+        named.update(SCRIPT_APP_ATTR.findall(match.group("attrs")))
+        named.update(SCRIPT_APP_JSON.findall(match.group("body")))
+    return hosts & named
+
+
 def has_island(html: str) -> bool:
     """Whether serialized output holds a Vue app."""
-    return VUE_HOST.search(html) is not None
+    return bool(island_ids(html))
 
 
 def island_options(citry_context: Any) -> IslandOptions:
@@ -282,6 +306,9 @@ class Tag:
 
 def tags(markup: str) -> Iterator[Tag]:
     """Every tag in `markup`, skipping comments and the text of raw-text elements."""
+    # Lowered once: a page with many islands has many raw-text elements, and
+    # lowering the whole page for each of them made the scan quadratic.
+    lowered = markup.lower()
     position = 0
     while True:
         match = TOKEN.search(markup, position)
@@ -294,7 +321,7 @@ def tags(markup: str) -> Iterator[Tag]:
         tag = Tag(name.lower(), bool(match.group("end")), match.group("attrs"), match.start())
         yield tag
         if not tag.is_end and tag.name in RAW_TEXT:
-            close = markup.lower().find(f"</{tag.name}", position)
+            close = lowered.find(f"</{tag.name}", position)
             if close < 0:
                 return
             position = close
@@ -380,11 +407,13 @@ def refuse_misplaced_islands(html: str, *, open_elements: Iterable[str], origin:
     `open_elements` are the elements open where `html` goes, outermost first,
     as the Django template around a region left them.
     """
-    if not has_island(html):
+    apps = island_ids(html)
+    if not apps:
         return
     state = OpenElements(open_elements)
     for tag in tags(html):
-        if not tag.is_end and tag.name == "div" and VUE_HOST.match(f"<div{tag.attrs}"):
+        host = VUE_HOST.match(f"<div{tag.attrs}") if tag.name == "div" else None
+        if not tag.is_end and host is not None and host.group("app") in apps:
             parent = state.refused_parent()
             if parent is not None:
                 raise IslandPlacementError(placement_message(parent, origin))

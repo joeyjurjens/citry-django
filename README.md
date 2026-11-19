@@ -746,7 +746,7 @@ class Sidebar(Component):
 A `<c-*>` region in a *Django* template is unaffected either way, since it
 renders to finished HTML before the cache tag ever sees it.
 
-### A component that needs Vue cannot stand inside `<p>`, a table or `<select>`
+### Where a component that needs Vue may stand
 
 Citry hands a component that needs Vue to Vue as its own app, an *island*,
 and Vue mounts it on a `<div>` where the component stood. The browser closes
@@ -765,10 +765,12 @@ Move the enclosing element into the component's own template, or move the
 component out of it. A `<li>` in a `<ul>`, a `<td>`, a `<div>` and most other
 elements are fine. A component that does not need Vue may stand anywhere.
 
-The check reads the template the region is written in, so a `<p>` that only
-opens under a Django condition still counts. It does not see an element that
-an including or parent template opened around an `{% include %}` or a
-`{% block %}`.
+The check reads the markup of the template the region is written in. A
+`<p>` opened inside `{% if %}` counts even when the branch is not taken,
+unless another branch opens an element that closes it. The check does not
+see an element that an including or parent template opened around an
+`{% include %}` or a `{% block %}`, and it does not run for a component you
+render directly from Python rather than from a Django template.
 
 ### A Django block cannot straddle a region boundary
 

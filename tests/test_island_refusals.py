@@ -21,6 +21,7 @@ def fixtures(component):
         js_data=lambda self, kwargs, slots: {"on": True},
     )
     component('<span class="still">still</span>', name="island-still")
+    component('<div c-id="ident">fake</div>', name="island-fake")
 
 
 class TestPlacement:
@@ -51,6 +52,8 @@ class TestPlacement:
             "<p>closed by the div<div><c-island-live/></div>",
             "<svg><foreignObject><c-island-live/></foreignObject></svg>",
             "<div><button><c-island-live/></button></div>",
+            "{% comment %}<p>{% endcomment %}<c-island-live/>",
+            "<p>{% verbatim %}</p>{% endverbatim %}<c-island-live/>",
         ],
     )
     def test_a_host_where_a_div_may_stand_renders(self, render_django, source):
@@ -59,6 +62,12 @@ class TestPlacement:
     def test_a_component_without_vue_may_stand_anywhere(self, render_django):
         html = render_django("<p>Hi <c-island-still/></p><table><c-island-still/></table>")
         assert html.count('class="still"') == 2
+
+    def test_a_host_id_written_from_data_is_not_an_island(self, render_django, settings):
+        """Escaped data can copy the host's id but never the script naming it."""
+        settings.CITRY_DEPS_STRATEGY = "simple"
+        html = render_django("<p><c-island-fake c-ident='ident'/></p>", ident="citry-vue-dead")
+        assert 'id="citry-vue-dead"' in html
 
     def test_the_message_names_the_template_and_the_way_out(self, render_django):
         with pytest.raises(IslandPlacementError) as error:
