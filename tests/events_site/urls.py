@@ -27,6 +27,7 @@ FILLS = """{% load i18n %}<!doctype html>
     <span class="hello">{% translate "Hello" %}</span>
     {% if note %}<b class="note">{{ note }}</b>{% endif %}
   </c-modal>
+  <p>Django text between the islands.</p>
   <c-panel/>
   <c-js/>
 </body></html>
