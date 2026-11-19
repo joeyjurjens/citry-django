@@ -20,7 +20,6 @@ from django.test import Client
 
 from citry_django import PartialResponseWarning, page_csp_nonce
 from citry_django.events import SESSION_KEY
-from citry_django.islands import IslandStrategyError
 from citry_django.registry import citry_app_source
 from events_site.app import app as site_app
 from islands import islands, runtime_scripts
@@ -188,22 +187,120 @@ def test_a_kept_nonce_is_used_only_when_the_app_asks(monkeypatch, settings, rf, 
     assert "staleNonce" not in html
 
 
-def test_a_partial_needs_citrys_routes(monkeypatch, settings, rf, render_django):
+def test_without_citrys_routes_a_partial_keeps_page_islands(
+    monkeypatch, settings, rf, render_django
+):
+    """A fragment loads the runtime by URL. Without the routes the island stays
+    a full-page one, which htmx can still run, and development says why."""
     make_app(monkeypatch, settings)
-    with pytest.raises(IslandStrategyError, match=r"citry_django\.urls"):
-        render_django("<c-live/>", request=htmx_request(rf))
+    settings.DEBUG = True
+    with pytest.warns(PartialResponseWarning, match=r"citry_django\.urls"):
+        html = render_django("<c-live/>", request=htmx_request(rf))
+    assert fragments(html) == []
+    assert len(islands(html).starts) == 1
+
+
+def test_a_view_can_say_it_answers_a_whole_page(render_django, rf):
+    request = htmx_request(rf)
+    request.citry_partial = False
+    html = render_django("<c-partial-live/>", request=request)
+    assert fragments(html) == []
+    assert len(islands(html).starts) == 1
+
+
+def partial_after_page(rf, render_django, page_source: str = "<c-live/>"):
+    """A page with an island kept "pageNonce"; return the same visitor's
+    htmx request, whose own response has the nonce "partialNonce"."""
+    page = page_request(rf, nonce="pageNonce")
+    render_django(page_source, request=page)
+    partial = page_request(rf, nonce="partialNonce")
+    partial.session = page.session
+    partial.META["HTTP_HX_REQUEST"] = "true"
+    return partial
+
+
+def assert_page_nonce(html: str) -> None:
+    """Every place a fragment names a nonce names the page's."""
+    matches = list(FRAGMENT.finditer(html))
+    assert matches
+    for match in matches:
+        assert 'nonce="pageNonce"' in match.group("attrs")
+        assert json.loads(match.group("json"))["vue"]["prepared"]["nonce"] == "pageNonce"
+    # The loader's own tag, and the runtime tag it adds.
+    assert '<script nonce="pageNonce">' in html
+    assert 's.nonce = "pageNonce";' in html
+    assert "partialNonce" not in html
+
+
+def test_an_island_in_a_django_block_carries_the_page_nonce(
+    monkeypatch, settings, rf, render_django
+):
+    mounted_app(monkeypatch, settings, _csp_nonce=page_csp_nonce)
+    partial = partial_after_page(rf, render_django)
+    html = render_django("<c-loop c-ns='[1]'/>", request=partial)
+    assert_page_nonce(html)
+    assert partial.session[SESSION_KEY] == "pageNonce"
+
+
+def test_a_component_rendered_from_python_carries_the_page_nonce(
+    monkeypatch, settings, rf, render_django
+):
+    app = mounted_app(monkeypatch, settings, _csp_nonce=page_csp_nonce)
+    partial = partial_after_page(rf, render_django)
+    html = str(app.get("loop")(ns=[1]).render(template_globals={"request": partial}))
+    assert_page_nonce(html)
+    assert partial.session[SESSION_KEY] == "pageNonce"
+
+
+def test_a_nonce_in_the_context_gives_way_to_the_page_nonce(
+    monkeypatch, settings, rf, render_django
+):
+    mounted_app(monkeypatch, settings, _csp_nonce=page_csp_nonce)
+    partial = partial_after_page(rf, render_django)
+    html = render_django("<c-live/>", request=partial, csp_nonce="partialNonce")
+    assert_page_nonce(html)
+
+
+def test_a_whole_page_without_an_island_replaces_a_kept_nonce(
+    monkeypatch, settings, rf, render_django
+):
+    """The visitor moved on to a page without an island; a partial lands
+    there, so it needs that page's nonce, not the earlier page's."""
+    mounted_app(monkeypatch, settings, _csp_nonce=page_csp_nonce)
+    first = page_request(rf, nonce="firstNonce")
+    render_django("<c-live/>", request=first)
+    plain = page_request(rf, nonce="plainNonce")
+    plain.session = first.session
+    render_django("<p>No island here.</p>", request=plain)
+    assert first.session[SESSION_KEY] == "plainNonce"
+
+
+def test_a_page_without_an_island_starts_no_session(monkeypatch, settings, rf, render_django):
+    mounted_app(monkeypatch, settings, _csp_nonce=page_csp_nonce)
+    plain = page_request(rf, nonce="plainNonce")
+    render_django("<p>No island here.</p>", request=plain)
+    assert SESSION_KEY not in plain.session
+    assert not plain.session.modified
 
 
 class TestTheDevelopmentWarning:
     def test_a_page_response_without_a_body_warns(self, settings, rf, render_django):
         settings.DEBUG = True
-        with pytest.warns(PartialResponseWarning, match="HX-Request"):
+        with pytest.warns(PartialResponseWarning, match=r"\(/cards/\).*HX-Request"):
+            render_django("<c-partial-live/>", request=rf.get("/cards/"))
+
+    def test_it_warns_without_page_collection_too(self, settings, rf, render_django):
+        settings.DEBUG = True
+        settings.CITRY_COLLECT_PAGE_ASSETS = False
+        with pytest.warns(PartialResponseWarning):
             render_django("<c-partial-live/>", request=rf.get("/"))
 
     @pytest.mark.parametrize(
         "source",
         [
             "<body><c-partial-live/></body>",
+            # The browser adds a <body> that the page leaves out.
+            "<!doctype html><title>t</title><c-partial-live/>",
             "<c-partial-still/>",
         ],
     )

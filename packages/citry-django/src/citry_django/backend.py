@@ -2,15 +2,18 @@ from __future__ import annotations
 
 import re
 import warnings
+from contextvars import ContextVar
 from typing import Any
 
 from django.conf import settings
 from django.template.backends.django import DjangoTemplates, Template
 from django.utils.safestring import mark_safe
 
-from .islands import island_ids
+from .events import refresh_page_nonce
+from .islands import island_ids, request_csp_nonce
 from .page import PageAssets, collected
 from .partials import PartialResponseWarning, is_partial
+from .registry import get_citry_app
 from .rewrite import rewrite_source
 
 TAGS_MODULE = "citry_django.templatetags.citry"
@@ -97,43 +100,69 @@ class PageTemplate(Template):
 
     def render(self, context: Any = None, request: Any = None) -> str:
         page = PageAssets.open()
+        # Only the outermost render is the response; a template rendered
+        # inside another one is part of that page by design. Tracked apart
+        # from `page`, which `CITRY_COLLECT_PAGE_ASSETS = False` turns off.
+        outermost = not rendering.get()
+        token = rendering.set(True) if outermost else None
         try:
             html = super().render(context, request)
         finally:
             if page is not None:
                 page.close()
+            if token is not None:
+                rendering.reset(token)
         html = collected(html, page)
-        # Only the outermost render is the response; a template rendered
-        # inside another one is part of that page by design.
-        if page is not None:
+        if outermost:
             if request is None and isinstance(context, dict):
                 request = context.get("request")
+            if not is_partial(request):
+                refresh_page_nonce(get_citry_app(), request, page_nonce(context, request))
             warn_if_partial_looking(html, request)
         return mark_safe(html)
 
 
-#: A `<body>` start tag, which only a whole page has.
-BODY = re.compile(r"<body[\s>]", re.IGNORECASE)
+#: Whether a `PageTemplate` render is running, so a nested one knows it is
+#: not the response.
+rendering: ContextVar[bool] = ContextVar("citry_django_rendering", default=False)
+
+
+def page_nonce(context: Any, request: Any) -> str | None:
+    """This whole page's CSP nonce, read the way a region reads it."""
+    if isinstance(context, dict):
+        for key in ("csp_nonce", "CSP_NONCE"):
+            if context.get(key) is not None:
+                return str(context[key])
+    return request_csp_nonce(request)
+
+
+#: What only a whole page has: a `<body>` or `<html>` start tag, or a
+#: doctype. A page may leave out `<body>`, which the browser adds itself.
+WHOLE_PAGE = re.compile(r"<(?:body|html)[\s>]|<!doctype", re.IGNORECASE)
 
 
 def warn_if_partial_looking(html: str, request: Any) -> None:
-    """In development, warn when a page response holds an island but no `<body>`.
+    """In development, warn when a page response holds an island but looks partial.
 
     Such a response is usually part of a page that the browser inserts into a
     loaded one, which citry-django could not tell from the request. Its islands
     were then written for a whole page, and their start scripts do not run
     when the HTML is inserted, so they show up and do nothing.
     """
-    if not settings.DEBUG or is_partial(request) or BODY.search(html):
+    if not settings.DEBUG or is_partial(request) or WHOLE_PAGE.search(html):
         return
     if not island_ids(html):
         return
+    # Python shows a warning once per message and place, and every warning
+    # here comes from the same place, so the path tells them apart.
+    path = getattr(request, "path", None)
+    where = f" ({path})" if path else ""
     warnings.warn(
-        "This response holds a component that needs Vue but no <body>, so it "
-        "looks like part of a page. citry-django wrote it for a whole page, and "
-        "its scripts do not start when the HTML is inserted into a page that is "
-        "already loaded. If the browser inserts this response into a page, make "
-        "the request with htmx, which sends HX-Request, or set "
+        f"This response{where} has no <body> but holds a component that needs "
+        "Vue, so it looks like part of a page. citry-django wrote it for a whole "
+        "page, and its scripts do not start when the HTML is inserted into a page "
+        "that is already loaded. If the browser inserts this response into a "
+        "page, make the request with htmx, which sends HX-Request, or set "
         "request.citry_partial = True in the view.",
         PartialResponseWarning,
         stacklevel=3,

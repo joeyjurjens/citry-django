@@ -28,12 +28,16 @@ def is_partial(request: Any) -> bool:
     htmx sends `HX-Request: true` with every request it makes, including a
     boosted link, whose answer it swaps into the page's `<body>`. A view that
     returns part of a page to a client of its own, or as JSON, sets
-    `request.citry_partial = True`. A render without a request is a page.
+    `request.citry_partial = True`; a view that sets it to False answers a
+    whole page whatever the headers say. A render without a request is a
+    page.
     """
     if request is None:
         return False
-    if getattr(request, PARTIAL_ATTRIBUTE, False) is True:
-        return True
+    chosen = getattr(request, PARTIAL_ATTRIBUTE, None)
+    # The view knows best, so its own answer wins over htmx's header.
+    if isinstance(chosen, bool):
+        return chosen
     headers = getattr(request, "headers", None)
     return headers is not None and headers.get("HX-Request") == "true"
 

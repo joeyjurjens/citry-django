@@ -68,10 +68,10 @@ def page_csp_nonce(event_request: Any) -> str | None:
 
 
 def remembers_page_nonce(app: Any) -> bool:
-    """Whether the app asked citry-django to keep each page's nonce.
+    """Whether the app asked citry-django to keep the nonce of each page with an island.
 
-    Only an app that reads it back through `page_csp_nonce` has, so a project
-    that has not asked for this gets no session write on every page.
+    Only an app that reads it back through `page_csp_nonce` asks, so a project
+    that has not gets no session write on every page.
     """
     events = app.settings.extensions_defaults.get("events", {})
     return events.get("_csp_nonce") is page_csp_nonce
@@ -90,6 +90,21 @@ def remember_page_nonce(app: Any, request: Any, nonce: str | None) -> None:
         return
     if request.session.get(SESSION_KEY) != nonce:
         request.session[SESSION_KEY] = nonce
+
+
+def refresh_page_nonce(app: Any, request: Any, nonce: str | None) -> None:
+    """Keep the nonce of a whole page without an island, for a visitor who has one kept.
+
+    A partial or a server event answer lands in the page the visitor has
+    open, which may hold no island: an htmx swap often loads the first one.
+    Once a visitor has a kept nonce, every whole page they load replaces it,
+    so the kept nonce is never an earlier page's. A visitor without one gets
+    no session from this.
+    """
+    session = getattr(request, "session", None)
+    if session is None or SESSION_KEY not in session:
+        return
+    remember_page_nonce(app, request, nonce)
 
 
 def partial_csp_nonce(app: Any, request: Any) -> str | None:

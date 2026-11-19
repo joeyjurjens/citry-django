@@ -22,12 +22,14 @@ see whether a component around it will be a Vue app.
 from __future__ import annotations
 
 import re
+import warnings
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 from weakref import WeakKeyDictionary
 
 from citry import CitryRender, OutsideSlotContentError
+from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.middleware.csrf import get_token
@@ -36,7 +38,7 @@ from django.utils.html import escape
 from .content import refused_content
 from .events import partial_csp_nonce
 from .page import placed
-from .partials import is_partial
+from .partials import PartialResponseWarning, is_partial
 from .registry import deps_strategy, get_citry_app
 
 try:
@@ -336,25 +338,31 @@ def island_strategy(request: Any) -> str:
     """The asset strategy an island in this response is written with.
 
     The configured strategy, except that an island in a partial response is
-    a fragment: Citry's `"document"` strategy expects the page around it,
-    with the runtime and a start script that runs, and a partial has
-    neither.
+    a fragment when Citry's routes are mounted: Citry's `"document"` strategy
+    expects the page around it, with the runtime and a start script that
+    runs, and a partial has neither.
     """
     strategy = deps_strategy()
     if strategy != "document" or not is_partial(request):
         return strategy
     # A fragment loads the runtime and the island's files by URL, so Citry
-    # needs its routes mounted; say how in Django's terms.
+    # needs its routes mounted. Without them the island stays a full-page
+    # one, as before partials were recognised: htmx runs its inline scripts,
+    # which works for a boosted page. Refusing would turn every htmx request
+    # of such a project into an error.
     if get_citry_app().mounted_prefix is None:
-        msg = (
-            "A component that needs Vue is part of a partial response (an htmx "
-            "request, or a view that sets request.citry_partial = True). "
-            "citry-django writes it as a Citry fragment, which loads Citry's "
-            "browser runtime by URL, so Citry's routes must be mounted: add "
-            'citry_django.urls to your URLconf (see "Citry\'s own routes" in '
-            "the citry-django README)."
-        )
-        raise IslandStrategyError(msg)
+        if settings.DEBUG:
+            warnings.warn(
+                "A component that needs Vue is part of a partial response (an htmx "
+                "request, or a view that sets request.citry_partial = True), but "
+                "Citry's routes are not mounted, so citry-django writes it for a "
+                "whole page, which may not start once inserted. Add "
+                'citry_django.urls to your URLconf (see "Citry\'s own routes" in '
+                "the citry-django README).",
+                PartialResponseWarning,
+                stacklevel=2,
+            )
+        return strategy
     return "fragment"
 
 
