@@ -17,6 +17,7 @@ from .islands import (
     IslandOptions,
     PendingIslands,
     ensure_csrf_cookie,
+    island_csp_nonce,
     refuse_misplaced_islands,
     request_csp_nonce,
     serialize_region,
@@ -218,8 +219,10 @@ class CitryFragment(template.Node):
         )
         # Before the region itself: once components in its Django blocks are
         # islands, the region may need no Vue of its own.
-        inner_islands = pending.settle(rendered, csp_nonce=nonce)
-        html, island = serialize_region(rendered, csp_nonce=nonce, reason=pending.reason)
+        inner_islands = pending.settle(rendered, csp_nonce=nonce, request=request)
+        html, island = serialize_region(
+            rendered, csp_nonce=nonce, reason=pending.reason, request=request
+        )
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
         if island or inner_islands:
             # An island may hold Events, whose calls need the CSRF cookie and,
@@ -233,8 +236,13 @@ class CitryFragment(template.Node):
 
     @staticmethod
     def csp_nonce(context: Any, request: Any) -> str | None:
-        """The host response nonce, without depending on a CSP package."""
+        """The nonce of the page this region lands in, without depending on a CSP package.
+
+        Usually the response's own nonce. A partial response lands in a page
+        that is already loaded, so its islands carry that page's nonce
+        instead (see `island_csp_nonce`).
+        """
         for candidate in (context.get("csp_nonce"), context.get("CSP_NONCE")):
             if candidate is not None:
-                return str(candidate)
-        return request_csp_nonce(request)
+                return island_csp_nonce(request, str(candidate))
+        return island_csp_nonce(request, request_csp_nonce(request))

@@ -153,7 +153,9 @@ class _BlockState:
         (see `page.placed`). Components that need no Vue are never passed
         here, so the enclosing serializer still collects their assets.
         """
-        island = serialize_island(rendered, csp_nonce=self.options.csp_nonce)
+        island = serialize_island(
+            rendered, csp_nonce=self.options.csp_nonce, request=self.options.request
+        )
         if island is None:  # pragma: no cover - only renders that need Vue come here
             return rendered
         ensure_csrf_cookie(self.options.request)

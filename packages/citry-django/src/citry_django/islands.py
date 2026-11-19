@@ -34,8 +34,10 @@ from django.middleware.csrf import get_token
 from django.utils.html import escape
 
 from .content import refused_content
+from .events import partial_csp_nonce
 from .page import placed
-from .registry import deps_strategy
+from .partials import is_partial
+from .registry import deps_strategy, get_citry_app
 
 try:
     from django.middleware.csp import get_nonce
@@ -135,7 +137,7 @@ class PendingIslands:
     def add(self, block: CitryRender) -> None:
         self.blocks.append(block)
 
-    def settle(self, region: CitryRender, *, csp_nonce: str | None) -> bool:
+    def settle(self, region: CitryRender, *, csp_nonce: str | None, request: Any = None) -> bool:
         """Make islands of the components that can each be their own Vue app; say if any.
 
         Each component in a block that needs Vue on its own becomes a
@@ -176,7 +178,7 @@ class PendingIslands:
         if not region.needs_browser_runtime():
             try:
                 built = [
-                    serialize_island(candidate.child, csp_nonce=csp_nonce)
+                    serialize_island(candidate.child, csp_nonce=csp_nonce, request=request)
                     for candidate in candidates
                 ]
             except IslandSlotError as error:
@@ -216,7 +218,8 @@ def settle_root(component: Any, rendered: Any) -> IslandOptions | None:
     if pending is None or not isinstance(rendered, CitryRender):
         return None
     options = pending.options or IslandOptions(csp_nonce=None)
-    return options if pending.settle(rendered, csp_nonce=options.csp_nonce) else None
+    settled = pending.settle(rendered, csp_nonce=options.csp_nonce, request=options.request)
+    return options if settled else None
 
 
 def vue_children(render: CitryRender) -> Iterator[tuple[CitryRender, int, CitryRender]]:
@@ -272,7 +275,9 @@ def island_options(citry_context: Any) -> IslandOptions:
     if isinstance(provided, IslandOptions):
         return provided
     request = citry_context.variables.get("request")
-    return IslandOptions(csp_nonce=request_csp_nonce(request), request=request)
+    return IslandOptions(
+        csp_nonce=island_csp_nonce(request, request_csp_nonce(request)), request=request
+    )
 
 
 def ensure_csrf_cookie(request: Any) -> None:
@@ -311,6 +316,48 @@ def request_csp_nonce(request: Any) -> str | None:
     return None if nonce is None else str(nonce)
 
 
+def island_csp_nonce(request: Any, nonce: str | None) -> str | None:
+    """The nonce the islands of this response carry: `nonce`, unless it is a partial.
+
+    A partial response lands in a page that is already loaded, whose nonce
+    citry-django kept when it rendered that page (see
+    `events.partial_csp_nonce`). Without a kept nonce, `nonce` stands; under
+    a nonce-based policy the browser runtime then refuses the island and
+    says so in the console.
+    """
+    if is_partial(request):
+        kept = partial_csp_nonce(get_citry_app(), request)
+        if kept is not None:
+            return kept
+    return nonce
+
+
+def island_strategy(request: Any) -> str:
+    """The asset strategy an island in this response is written with.
+
+    The configured strategy, except that an island in a partial response is
+    a fragment: Citry's `"document"` strategy expects the page around it,
+    with the runtime and a start script that runs, and a partial has
+    neither.
+    """
+    strategy = deps_strategy()
+    if strategy != "document" or not is_partial(request):
+        return strategy
+    # A fragment loads the runtime and the island's files by URL, so Citry
+    # needs its routes mounted; say how in Django's terms.
+    if get_citry_app().mounted_prefix is None:
+        msg = (
+            "A component that needs Vue is part of a partial response (an htmx "
+            "request, or a view that sets request.citry_partial = True). "
+            "citry-django writes it as a Citry fragment, which loads Citry's "
+            "browser runtime by URL, so Citry's routes must be mounted: add "
+            'citry_django.urls to your URLconf (see "Citry\'s own routes" in '
+            "the citry-django README)."
+        )
+        raise IslandStrategyError(msg)
+    return "fragment"
+
+
 class IslandSlotError(TypeError):
     """A component that needs Vue holds slot content written outside it."""
 
@@ -320,7 +367,7 @@ class IslandSlotError(TypeError):
         self.reason = reason
 
 
-def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
+def serialize_island(render: Any, *, csp_nonce: str | None, request: Any = None) -> str | None:
     """`render` serialized as its own island, or None when it needs no Vue.
 
     Used for a component inside a Django block, which has to stand on its own
@@ -332,7 +379,7 @@ def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
     # costs no serialize here.
     if not render.needs_browser_runtime():
         return None
-    strategy = deps_strategy()
+    strategy = island_strategy(request)
     refuse_strategy(strategy)
     try:
         html = serialized(render, strategy=strategy, csp_nonce=csp_nonce)
@@ -358,7 +405,7 @@ def outside_slot_message(render: Any) -> str:
 
 
 def serialize_region(
-    render: Any, *, csp_nonce: str | None, reason: str | None = None
+    render: Any, *, csp_nonce: str | None, reason: str | None = None, request: Any = None
 ) -> tuple[str, bool]:
     """A region's output, and whether it is an island itself.
 
@@ -366,7 +413,9 @@ def serialize_region(
     Django blocks could have been islands; an error about the region names it.
     """
     island = render.needs_browser_runtime()
-    strategy = deps_strategy()
+    # A region without Vue keeps the configured strategy in a partial too, so
+    # the page still writes each of its tags once (see `page.placed`).
+    strategy = island_strategy(request) if island else deps_strategy()
     # Under "simple" or "ignore" Citry would write the island without its
     # scripts, so it would do nothing in the browser.
     if island:
@@ -380,8 +429,10 @@ def serialized(
     """`render`'s HTML, with its asset tags beside it for the page to collect.
 
     Citry hands the tags back apart from the HTML, so citry-django writes them
-    itself (see `page.placed`). The "fragment" strategy writes a loader that
-    Citry places itself, so it keeps Citry's own placement.
+    itself (see `page.placed`). A fragment is the exception, and Citry refuses
+    to hand its tags back: it carries no page tags, only a loader for the
+    runtime and the island's data block, which have to stay beside its HTML
+    because they work only once that HTML is in the page.
     """
     try:
         if strategy == "fragment":

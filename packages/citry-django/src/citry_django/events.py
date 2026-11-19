@@ -31,7 +31,9 @@ is a separate request. So citry-django keeps the nonce in the session when it
 renders a page that holds an island, and gives it back to Citry through
 Citry's `_csp_nonce` Events setting, as in the example above.
 
-The session keeps the nonce of the last such page each visitor loaded.
+The session keeps the nonce of the last such page each visitor loaded. A
+partial response, such as an htmx swap, lands in that page too, so its
+islands carry the same nonce (see `partial_csp_nonce`).
 """
 
 from __future__ import annotations
@@ -44,6 +46,7 @@ from django.http import HttpRequest
 from .context import HOST_PROVIDE
 from .engine import context_processors
 from .i18n import LOCALE_PROVIDE, locale_context
+from .partials import is_partial
 from .registry import get_citry_app
 
 #: The session key the nonce is kept under.
@@ -64,19 +67,45 @@ def page_csp_nonce(event_request: Any) -> str | None:
     return nonce if isinstance(nonce, str) else None
 
 
-def remember_page_nonce(app: Any, request: Any, nonce: str | None) -> None:
-    """Keep this page's nonce for the server events it will send.
+def remembers_page_nonce(app: Any) -> bool:
+    """Whether the app asked citry-django to keep each page's nonce.
 
-    Only when the app reads it back through `page_csp_nonce`, so a project
+    Only an app that reads it back through `page_csp_nonce` has, so a project
     that has not asked for this gets no session write on every page.
     """
+    events = app.settings.extensions_defaults.get("events", {})
+    return events.get("_csp_nonce") is page_csp_nonce
+
+
+def remember_page_nonce(app: Any, request: Any, nonce: str | None) -> None:
+    """Keep this page's nonce for the server events and partials it will send."""
     if nonce is None or getattr(request, "session", None) is None:
         return
-    events = app.settings.extensions_defaults.get("events", {})
-    if events.get("_csp_nonce") is not page_csp_nonce:
+    if not remembers_page_nonce(app):
+        return
+    # A partial lands in a page that is already loaded, and it carries that
+    # page's nonce (see `partial_csp_nonce`); its own response's nonce
+    # belongs to no page in the browser.
+    if is_partial(request):
         return
     if request.session.get(SESSION_KEY) != nonce:
         request.session[SESSION_KEY] = nonce
+
+
+def partial_csp_nonce(app: Any, request: Any) -> str | None:
+    """The nonce of the page a partial response lands in, when citry-django kept it.
+
+    A partial's islands are inserted into a page that is already loaded, so
+    the browser runtime accepts them only with that page's nonce. The
+    partial's own request names a nonce for its own response, which no page
+    in the browser has. Returns None when the app does not keep page nonces
+    or this visitor loaded no page with an island.
+    """
+    session = getattr(request, "session", None)
+    if session is None or not remembers_page_nonce(app):
+        return None
+    nonce = session.get(SESSION_KEY)
+    return nonce if isinstance(nonce, str) else None
 
 
 def render_inputs(event_request: EventRequest) -> RenderInputs:
