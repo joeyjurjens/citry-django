@@ -21,6 +21,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from citry import OutsideSlotContentError
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
 from django.middleware.csrf import get_token
@@ -144,12 +145,6 @@ def request_csp_nonce(request: Any) -> str | None:
     return None if nonce is None else str(nonce)
 
 
-#: What Citry's refusal says when a child holds slot content its parent
-#: wrote. Citry raises a plain `TypeError` for it, so the text is the only
-#: way to tell it from any other `TypeError`.
-OUTSIDE_SLOT_CONTENT = "slot content that a component outside it wrote"
-
-
 class IslandSlotError(TypeError):
     """A component that needs Vue holds slot content written outside it."""
 
@@ -170,9 +165,7 @@ def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
     refuse_strategy(strategy)
     try:
         html = serialized(render, strategy=strategy, csp_nonce=csp_nonce)
-    except TypeError as error:
-        if OUTSIDE_SLOT_CONTENT not in str(error):
-            raise
+    except OutsideSlotContentError as error:
         raise IslandSlotError(outside_slot_message(render)) from error
     return html
 
