@@ -5,7 +5,9 @@ from typing import Any
 
 from citry import collect_compiled_body_fills, render_compiled_body
 from django import template
-from django.template.base import Parser
+from django.template.base import Node, Parser, VariableNode, render_value_in_context
+from django.template.defaulttags import CycleNode, FirstOfNode
+from django.templatetags.i18n import BlockTranslateNode, TranslateNode
 from django.utils.safestring import mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
@@ -24,6 +26,11 @@ from .islands import (
 )
 from .page import Assets, slot
 from .registry import context_behavior, get_citry_app
+
+# Citry writes the ESC control character in an escaped value as this
+# reference (see `CitryVariableNode`).
+ESC = "\x1b"
+ESC_REFERENCE = "&#27;"
 
 
 class DottedLoop(dict):
@@ -79,6 +86,72 @@ class CitryName:
         return scope[self.name]
 
 
+class CitryVariableNode(VariableNode):
+    """
+    A ``{{ ... }}`` inside a Django block, written the way Citry writes a value.
+
+    Citry writes the ESC control character as ``&#27;`` when it escapes a
+    value, so a page declared in an encoding such as ISO-2022-JP cannot read
+    it as a switch to another character set. Django's escaping leaves ESC as
+    is, so the same value would reach the page differently inside a block.
+    Only the written output changes: a tag that takes the value as an
+    argument resolves it through the parser as before.
+    """
+
+    def render(self, context: Any) -> str:
+        try:
+            value = self.filter_expression.resolve(context)
+        except UnicodeDecodeError:  # pragma: no cover - Django's own fallback
+            return ""
+        output = render_value_in_context(value, context)
+        # With autoescape off, the author asked Django not to escape at all.
+        if ESC not in output or not context.autoescape or self.is_trusted(value):
+            return output
+        return mark_safe(output.replace(ESC, ESC_REFERENCE))
+
+    def is_trusted(self, value: Any) -> bool:
+        """Whether the author marked this output as HTML, which Citry leaves as written.
+
+        Django's escaping filters (`escape`, `linebreaks`, `urlize` and the
+        like) also return safe text, with the value's ESC still in it, so
+        only a value that reached the expression already safe, with no
+        filter, or an explicit `safe` or `safeseq` counts.
+        """
+        filters = getattr(self.filter_expression, "filters", ())
+        if not filters:
+            return hasattr(value, "__html__")
+        return any(getattr(func, "__name__", "") in TRUSTING_FILTERS for func, _ in filters)
+
+
+#: The filters with which an author marks a value as HTML.
+TRUSTING_FILTERS = frozenset({"safe", "safeseq"})
+
+#: Django tags that write a value into the page without a `{{ }}`.
+WRITING_TAGS = (FirstOfNode, CycleNode, TranslateNode, BlockTranslateNode)
+
+
+class CitryWrittenTag(Node):
+    """
+    A tag from `WRITING_TAGS` inside a Django block, with ESC written as Citry writes it.
+
+    These tags escape what they write themselves, so their output, not a
+    `{{ }}`, is where ESC reaches the page. Wrapping keeps the tag's own node,
+    so `{% resetcycle %}` still finds the cycle it names.
+    """
+
+    child_nodelists = ()
+
+    def __init__(self, inner: Node) -> None:
+        self.inner = inner
+
+    def render(self, context: Any) -> str:
+        output = self.inner.render_annotated(context)
+        # With autoescape off, the author asked Django not to escape at all.
+        if ESC not in output or not context.autoescape:
+            return output
+        return mark_safe(output.replace(ESC, ESC_REFERENCE))
+
+
 class CitrySegment(template.Node):
     """One run of Citry content inside a Django block."""
 
@@ -128,6 +201,15 @@ class CitryParser(Parser):
     def __init__(self, tokens: Any, engine: Any, origin: Any) -> None:
         super().__init__(tokens, engine.template_libraries, engine.template_builtins, origin)
         self.tags["citryseg"] = CitrySegment.from_token
+
+    def extend_nodelist(self, nodelist: Any, node: Any, token: Any) -> None:
+        # Every `{{ ... }}` and every tag that writes a value reaches the
+        # block through here, so each one gets Citry's way of writing ESC.
+        if type(node) is VariableNode:
+            node = CitryVariableNode(node.filter_expression)
+        elif isinstance(node, WRITING_TAGS):
+            node = CitryWrittenTag(node)
+        super().extend_nodelist(nodelist, node, token)
 
     def compile_filter(self, token: str) -> Any:
         expression = token.strip()

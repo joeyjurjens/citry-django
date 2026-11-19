@@ -1,6 +1,7 @@
 import threading
 
 import pytest
+from django.utils.safestring import mark_safe
 
 HANDLED = [
     pytest.param(
@@ -232,3 +233,51 @@ def test_text_shaped_like_an_internal_comment_is_shown_as_text(
     source = '{% for c in cs %}<p>{{ c|default:"" }}</p>{% endfor %}'
     html = strip_cids(render(source, cs=["ok", text]))
     assert render_vanilla(source, cs=["ok", text]).strip() == html.strip()
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("{% if 1 %}<p>{{ n }}</p>{% endif %}", id="bare-name"),
+        pytest.param("{% if 1 %}<p>{{ n|default:'' }}</p>{% endif %}", id="with-a-filter"),
+        pytest.param("{% for x in xs %}<p>{{ x }}</p>{% endfor %}", id="loop-variable"),
+        pytest.param('<p title="{% if 1 %}{{ n }}{% endif %}">x</p>', id="attribute-value"),
+        pytest.param("{% if 1 %}<p>{{ n|force_escape }}</p>{% endif %}", id="escaping-filter"),
+        pytest.param("{% if 1 %}{{ n|linebreaks }}{% endif %}", id="html-writing-filter"),
+        pytest.param("{% if 1 %}<p>{% firstof n %}</p>{% endif %}", id="firstof"),
+        pytest.param("{% for x in xs %}<p>{% cycle n n %}</p>{% endfor %}", id="cycle"),
+        pytest.param(
+            "{% load i18n %}{% if 1 %}<p>{% blocktranslate %}{{ n }}{% endblocktranslate %}</p>"
+            "{% endif %}",
+            id="blocktranslate",
+        ),
+    ],
+)
+def test_escape_control_character_in_a_django_block_is_written_as_a_reference(render, source):
+    """ESC in a value Django writes inside a block reaches the page as `&#27;`, like Citry."""
+    html = render(source, n="\x1b$B", xs=["\x1b$B"])
+    assert "\x1b" not in html
+    assert "&#27;$B" in html
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param("{% if 1 %}<p>{{ m }}</p>{% endif %}", id="safe-value"),
+        pytest.param("{% if 1 %}<p>{{ n|safe }}</p>{% endif %}", id="safe-filter"),
+        pytest.param(
+            "{% autoescape off %}{% if 1 %}<p>{{ n }}</p>{% endif %}{% endautoescape %}",
+            id="autoescape-off",
+        ),
+    ],
+)
+def test_escape_control_character_in_trusted_html_is_left_as_written(render, source):
+    """HTML the author marked as such, which Citry also leaves as written."""
+    html = render(source, n="\x1b$B", m=mark_safe("\x1b$B"))
+    assert "\x1b$B" in html
+
+
+def test_a_django_tag_still_receives_the_value_with_its_escape_character(render):
+    """Only the written output changes: a tag argument is the value itself."""
+    html = render("{% if n == e %}<p>same</p>{% endif %}", n="\x1b$B", e="\x1b$B")
+    assert "same" in html
