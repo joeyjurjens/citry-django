@@ -534,6 +534,74 @@ Django send the CSRF cookie that the island's server events need.
 The page collects nothing under `CITRY_DEPS_STRATEGY = "fragment"`: each
 region keeps the tags Citry places for it.
 
+### Partial responses: htmx and template partials
+
+A partial response is HTML that the browser inserts into a page it has
+already loaded: an htmx swap, a Django 6 template partial such as
+`"cards.html#card"`, or HTML a view returns inside JSON. An island written
+for a whole page does not start there. Its start script does not run when
+the HTML is inserted, and the page may not have Citry's runtime yet.
+
+So citry-django writes each island in a partial response as a Citry
+*fragment*. It treats a response as partial when:
+
+- the request carries `HX-Request: true`, which htmx sends with every
+  request, including a boosted link;
+- or the view sets `request.citry_partial = True`, for a client of your
+  own:
+
+```python
+def card(request):
+    request.citry_partial = True
+    return render(request, "cards.html#card", {"card": card})
+```
+
+A fragment holds the island's HTML, a small loader script and a data block.
+When the browser inserts it:
+
+1. The loader adds Citry's runtime if the page does not have it yet, and
+   does nothing if it does, so the runtime loads once.
+2. The runtime finds the data block and starts the island as its own Vue
+   app. Removing the HTML stops the app.
+3. The island's server events pass Django's CSRF check and Citry's State
+   token check, as every island's do.
+
+htmx runs the loader when it swaps the HTML in. Inserting with `innerHTML`
+does not run scripts, so the page must have loaded the runtime already,
+for example with an island of its own.
+
+Things to know:
+
+- Mount [Citry's routes](#citrys-own-routes). A fragment loads the runtime
+  and the island's files by URL, so without the routes a partial that holds
+  an island raises `IslandStrategyError`.
+- Swap into a plain wrapper with `hx-swap="innerHTML"`. `hx-select`,
+  out-of-band swaps, or a swap straight into a `<tbody>` or `<select>` drop
+  the data block, and the island shows but does nothing.
+- An island in a fragment has no server HTML. It shows once Vue has
+  started it.
+- When one URL answers both a whole page and a partial, add
+  `Vary: HX-Request` to the response (Django's
+  `@vary_on_headers("HX-Request")`), so a cache does not hand one out for
+  the other.
+- Under a nonce-based Content Security Policy, the partial's islands must
+  carry the nonce of the page they land in, not the nonce of the partial's
+  own response. citry-django uses the nonce it keeps for server events; see
+  [HTML a server event sends back needs the page's CSP
+  nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce). It
+  keeps a nonce only for a page that holds an island.
+- A region without Vue keeps its tags in a partial too, each written once.
+- With `DEBUG` on, a response written for a whole page that holds an island
+  but no `<body>` raises `PartialResponseWarning`. It is usually a partial
+  that citry-django could not recognise, such as one fetched without
+  `HX-Request`.
+
+On Citry 1.1.0, a fragment's loader adds Citry's runtime but not the browser
+code of Citry's extensions. With i18n configured, a fragment inserted into a
+page that has not loaded that code is discarded, and the browser console
+shows `missing or incompatible Citry browser plugin: i18n`. A page with an
+island of its own loads it.
+
 ### Declaring what a component needs
 
 Two ways, and they are not interchangeable. One is the component's own code;
@@ -827,6 +895,10 @@ What a `<c-*>` region serializes, using Citry's own names:
 | `"simple"` | The tags alone. For an email or a static page, where per-instance JS would have nothing to run against. |
 | `"ignore"` | Nothing. Only when something downstream collects the assets; otherwise the page loads unstyled. |
 
+Under `"document"`, an island in a [partial
+response](#partial-responses-htmx-and-template-partials) is written as a
+fragment. `"fragment"` writes every region that way.
+
 `"simple"` and `"ignore"` suit static pages only. A component that needs Vue
 (one with `js_data()`, `Events`, Vue bindings or its own `js`) does nothing in
 the browser without its scripts, so a region holding one raises
@@ -1052,7 +1124,9 @@ from the template context (`csp_nonce` or `CSP_NONCE`), from django-csp's
 Citry's browser runtime applies a server event's update to the app already
 on the page and needs nothing more. A handler whose HTML answer is inserted
 into the page by a client of your own, such as htmx, needs the nonce of the
-page that sent the call, which the event request does not have. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events setting:
+page that sent the call, which the event request does not have. So does a
+[partial response](#partial-responses-htmx-and-template-partials) that holds
+an island. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events setting:
 
 ```python
 from citry_django import CitryDjangoExtension, page_csp_nonce
@@ -1093,8 +1167,8 @@ uv run tox                     # the Django matrix: 5.2 LTS, 6.0, 6.1
 uv run ruff check . && uv run ruff format --check .
 ```
 
-`tests/test_browser.py` loads a page with two islands in Chromium and
-clicks both. `uv sync` installs Playwright with the other development
+`tests/test_browser.py` loads pages with islands in Chromium, clicks them,
+and swaps an island in with htmx. `uv sync` installs Playwright with the other development
 tools; run `uv run playwright install chromium` once to download the
 browser. Without a browser the tests are skipped.
 `PLAYWRIGHT_CHROMIUM_EXECUTABLE` points them at another Chromium build.
