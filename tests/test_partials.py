@@ -16,6 +16,7 @@ import django
 import pytest
 from citry import Component
 from django.template import engines
+from django.test import Client
 
 from citry_django import PartialResponseWarning, page_csp_nonce
 from citry_django.events import SESSION_KEY
@@ -223,3 +224,85 @@ class TestTheDevelopmentWarning:
         with warnings.catch_warnings():
             warnings.simplefilter("error", PartialResponseWarning)
             render_django("<c-partial-live/>", request=rf.get("/"))
+
+
+class TestServerEventsFromAFragment:
+    """An island that htmx swapped in sends its server events like any other:
+    Django's CSRF check and Citry's State token still decide."""
+
+    @pytest.fixture(autouse=True)
+    def site_urls(self, settings):
+        settings.ROOT_URLCONF = "events_site.urls"
+
+    def call(self, client: Client, html: str, *, csrf: str | None, token: str | None = None):
+        [fragment] = fragments(html)
+        prepared = fragment["prepared"]
+        owner = next(item for item in prepared["manifest"]["occurrences"] if "eventContext" in item)
+        context = owner["eventContext"]
+        envelope = {
+            "protocol": "citry-events/1",
+            "requestId": "r1",
+            "calls": [
+                {
+                    "componentClassId": context["componentClassId"],
+                    "handlerName": "bump",
+                    "args": {},
+                    "callerRenderId": context["serverRenderId"],
+                    "stateToken": token or context["stateToken"],
+                    "sendSequence": 1,
+                }
+            ],
+            "capabilities": {
+                "actions": ["render"],
+                "swaps": ["morph"],
+                "renderers": ["vue-prepared/1"],
+            },
+        }
+        headers = {
+            "X-Citry-Events": "1",
+            "X-Citry-Vue-App": fragment["appId"],
+            "X-Citry-Vue-Occurrence": owner["id"],
+            "X-Citry-Vue-Revision": "0",
+        }
+        if csrf is not None:
+            headers["X-CSRFToken"] = csrf
+        return client.post(
+            prepared["endpoint"],
+            data=json.dumps(envelope),
+            content_type="application/citry-events+json",
+            headers=headers,
+        )
+
+    @pytest.fixture
+    def swapped(self, db):
+        client = Client(enforce_csrf_checks=True)
+        response = client.get("/card/", headers={"HX-Request": "true"})
+        assert response.status_code == 200
+        # The partial asks Django for the token, so its cookie comes along.
+        assert "csrftoken" in response.cookies
+        return client, response.content.decode(), response.cookies["csrftoken"].value
+
+    def test_a_call_with_the_csrf_token_runs(self, swapped):
+        client, html, csrf = swapped
+        response = self.call(client, html, csrf=csrf)
+        assert response.status_code == 200
+        [result] = json.loads(response.content)["results"]
+        assert result["ok"], result
+
+    def test_a_call_without_it_is_refused(self, swapped):
+        client, html, _ = swapped
+        assert self.call(client, html, csrf=None).status_code == 403
+
+    def test_a_forged_state_token_is_refused(self, swapped):
+        client, html, csrf = swapped
+        [fragment] = fragments(html)
+        owner = next(
+            item
+            for item in fragment["prepared"]["manifest"]["occurrences"]
+            if "eventContext" in item
+        )
+        genuine = owner["eventContext"]["stateToken"]
+        forged = genuine[:-4] + ("AAAA" if not genuine.endswith("AAAA") else "BBBB")
+        response = self.call(client, html, csrf=csrf, token=forged)
+        [result] = json.loads(response.content)["results"]
+        assert not result["ok"]

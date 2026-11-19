@@ -182,3 +182,155 @@ def test_the_runtime_loads_through_the_mount_with_its_integrity(live_server, bro
     assert runtime[0]["content-encoding"] == "gzip"
     assert runtime[0]["cache-control"] == "public, max-age=31536000, immutable"
     assert problems == []
+
+
+#: Citry's runtime, as the browser fetches it by content hash.
+RUNTIME_URL = re.compile(r"/citry/[0-9a-f]{8}/citry\.[0-9a-f]{64}\.js$")
+
+
+def watch(page) -> tuple[list[str], list[str]]:
+    """Collect the page's errors and warnings, and each runtime fetch."""
+    problems: list[str] = []
+    runtime: list[str] = []
+    page.on("pageerror", lambda error: problems.append(f"pageerror: {error}"))
+    page.on(
+        "console",
+        lambda message: (
+            problems.append(f"{message.type}: {message.text}")
+            if message.type in {"error", "warning"}
+            else None
+        ),
+    )
+    page.on(
+        "response",
+        lambda response: runtime.append(response.url) if RUNTIME_URL.search(response.url) else None,
+    )
+    return problems, runtime
+
+
+def mounted_hosts(page) -> list[bool]:
+    return page.evaluate(
+        "() => Array.from(document.querySelectorAll('[id^=\"citry-vue-\"]'))"
+        ".map((host) => Boolean(host.__vue_app__))"
+    )
+
+
+def runtime_tags(page) -> int:
+    return page.locator('script[src^="/citry/"][src*="/citry."]').count()
+
+
+def swap_in_a_card(page) -> None:
+    """Ask htmx for `/card/` and wait until its island has mounted."""
+    page.locator("button.load").click()
+    swapped = page.locator("#cards .counter button.bump")
+    sync_api.expect(swapped).to_have_text("swapped: 0")
+    page.wait_for_function(
+        "() => Boolean(document.querySelector('#cards [id^=\"citry-vue-\"]')?.__vue_app__)"
+    )
+
+
+@pytest.mark.usefixtures("events_site")
+def test_an_htmx_swap_mounts_an_island_on_a_page_that_has_the_runtime(live_server, browser_page):
+    """htmx swaps in a partial holding an island. Its loader finds the
+    runtime the page already loaded, and the runtime starts the island."""
+    page = browser_page
+    problems, runtime = watch(page)
+
+    response = page.goto(f"{live_server.url}/swap/")
+    assert response is not None
+    assert response.ok
+    assert mounted_hosts(page) == [True]
+
+    swap_in_a_card(page)
+    assert mounted_hosts(page) == [True, True]
+    card = page.locator("#cards .counter")
+    card.locator("button.bump").click()
+    sync_api.expect(card.locator("button.bump")).to_have_text("bumped: 1")
+    sync_api.expect(card.locator(".path")).to_have_text(
+        re.compile(r"^/citry/[0-9a-f]{8}/ext/events/")
+    )
+    # The island the page started with still answers on its own.
+    first = page.locator(".counter").first
+    first.locator("button.bump").click()
+    sync_api.expect(first.locator("button.bump")).to_have_text("bumped: 1")
+
+    assert runtime_tags(page) == 1
+    assert len(runtime) == 1
+    assert problems == []
+
+
+@pytest.mark.xfail(
+    strict=True,
+    reason=(
+        "Citry gap: a fragment's loader adds the core runtime but not the i18n "
+        "browser plugin, so on a page that has not loaded it the runtime discards "
+        "the fragment ('missing or incompatible Citry browser plugin: i18n'). The "
+        "test site's app configures i18n."
+    ),
+)
+@pytest.mark.usefixtures("events_site")
+def test_an_htmx_swap_loads_the_runtime_into_a_page_without_one(live_server, browser_page):
+    """On a page without any island, the partial's loader adds the runtime,
+    once, and a second swap reuses it."""
+    page = browser_page
+    problems, runtime = watch(page)
+
+    response = page.goto(f"{live_server.url}/plain/")
+    assert response is not None
+    assert response.ok
+    assert runtime_tags(page) == 0
+
+    swap_in_a_card(page)
+    card = page.locator("#cards .counter")
+    card.locator("button.bump").click()
+    sync_api.expect(card.locator("button.bump")).to_have_text("bumped: 1")
+
+    # A second swap replaces the island: the old app goes, the new one starts
+    # on the runtime already there.
+    swap_in_a_card(page)
+    assert mounted_hosts(page) == [True]
+    page.locator("#cards .counter button.bump").click()
+    sync_api.expect(page.locator("#cards .counter button.bump")).to_have_text("bumped: 1")
+
+    assert runtime_tags(page) == 1
+    assert len(runtime) == 1
+    assert problems == []
+
+
+@pytest.fixture
+def csp(settings):
+    """A nonce-based Content Security Policy on the test site's pages.
+
+    The live server built its middleware when it started, so the site's views
+    apply the policy themselves (see `events_site.urls.with_csp`).
+    """
+    settings.EVENTS_SITE_CSP = True
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.usefixtures("events_site", "csp")
+def test_an_htmx_swap_under_a_csp_carries_the_page_nonce(live_server, browser_page):
+    """The partial's own response has a nonce of its own, which no page in
+    the browser has. Its island carries the nonce of the page it lands in,
+    which citry-django kept when it rendered that page, so the runtime
+    starts it and the browser runs its loader."""
+    page = browser_page
+    problems, runtime = watch(page)
+
+    response = page.goto(f"{live_server.url}/swap/")
+    assert response is not None
+    assert response.ok
+    policy = response.all_headers()["content-security-policy"]
+    assert "'nonce-" in policy
+    assert mounted_hosts(page) == [True]
+
+    swap_in_a_card(page)
+    card = page.locator("#cards .counter")
+    card.locator("button.bump").click()
+    sync_api.expect(card.locator("button.bump")).to_have_text("bumped: 1")
+
+    assert runtime_tags(page) == 1
+    assert len(runtime) == 1
+    # A refused nonce shows up here: the browser blocking the loader, or the
+    # runtime refusing the island's data block.
+    assert problems == []
