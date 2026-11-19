@@ -349,6 +349,16 @@ The setting is about the *view's* context, which is the part Django hands down a
 
 For an extension that has to reach host state whatever the mode, the whole context is provided under `"django"`: `self.inject("django")`.
 
+### The locale is Django's active language
+
+When your Citry app has translations, a region renders in the language
+Django activated for the request (`get_language()`), so `tr()` follows
+`LocaleMiddleware` and `translation.override()` the way `{% translate %}`
+does. A regional variant falls back to its base language: `en-us` uses `en`
+when the app lists only `en`. A language the app does not list renders in
+the app's default locale, and citry-django logs a warning the first time.
+A component re-rendered by a server event does not yet get the locale.
+
 ## Assets
 
 ### Where a component's assets go

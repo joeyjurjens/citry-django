@@ -10,6 +10,7 @@ from django.utils.safestring import mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
 from .engine import get_django_engine
+from .i18n import LOCALE_PROVIDE, locale_context
 from .islands import (
     ISLANDS_PROVIDE,
     IslandOptions,
@@ -185,7 +186,13 @@ class CitryFragment(template.Node):
             # Islands built inside a component's Django blocks read this.
             ISLANDS_PROVIDE: IslandOptions(csp_nonce=nonce),
         }
-        rendered = get_citry_app().render_template(
+        app = get_citry_app()
+        # Citry content follows the language Django activated for this
+        # request, as the Django template around the region does.
+        locale = locale_context(app)
+        if locale is not None:
+            provides[LOCALE_PROVIDE] = locale
+        rendered = app.render_template(
             prepared(self.source),
             variables,
             template_globals=globals_ or None,
