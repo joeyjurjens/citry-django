@@ -61,7 +61,7 @@ class Counter(Component):
           <button
             type="button"
             class="bump"
-            @click="bump"
+            @c-click="bump"
           >{{ label }}: {{ count }}</button>
           <span class="locale">{{ locale }}</span>
           <span class="path">{{ request.path or "" }}</span>

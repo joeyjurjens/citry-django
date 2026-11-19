@@ -997,6 +997,12 @@ uv run tox                     # the Django matrix: 5.2 LTS, 6.0, 6.1
 uv run ruff check . && uv run ruff format --check .
 ```
 
+`tests/test_browser.py` loads a page with two islands in Chromium and
+clicks both. `uv sync` installs Playwright with the other development
+tools; run `uv run playwright install chromium` once to download the
+browser. Without a browser the tests are skipped.
+`PLAYWRIGHT_CHROMIUM_EXECUTABLE` points them at another Chromium build.
+
 The demo site, with real content:
 
 ```bash

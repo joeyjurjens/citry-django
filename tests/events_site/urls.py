@@ -9,7 +9,7 @@ from .app import PREFIX, app
 
 #: Two islands with Django text between them, and spots for their tags.
 PAGE = """<!doctype html>
-<html><head><title>Two islands</title><c-css/></head>
+<html><head><title>Two islands</title><link rel="icon" href="data:,"><c-css/></head>
 <body>
   <c-counter label="first"/>
   <p>Django text between the islands.</p>

@@ -64,7 +64,7 @@ def rendered_text(html: str) -> list[str]:
         if isinstance(value, dict):
             prepared = value.get("preparedData")
             if isinstance(prepared, dict):
-                found.extend(v for k, v in prepared.items() if k != "calls")
+                found.extend(v for v in prepared.values() if isinstance(v, str))
             for item in value.values():
                 walk(item)
         elif isinstance(value, list):
