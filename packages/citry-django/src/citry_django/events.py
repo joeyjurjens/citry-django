@@ -1,7 +1,7 @@
 """The CSP nonce of the page a Citry server event came from.
 
-A server event can answer with HTML that Citry serializes itself, for example
-for an htmx swap or a form post to the handler's own URL. Under a
+A server event can answer with HTML that Citry serializes itself, which a
+client of the app's own, such as htmx, inserts into the page. Under a
 nonce-based Content Security Policy that HTML has to carry the nonce of the
 page it lands in, and the event request does not know that page's nonce: it
 is a separate request. So citry-django keeps the nonce in the session when it

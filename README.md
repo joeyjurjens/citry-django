@@ -895,10 +895,9 @@ from the template context (`csp_nonce` or `CSP_NONCE`), from django-csp's
 `request.csp_nonce`, or from Django's own CSP middleware.
 
 Citry's browser runtime applies a server event's update to the app already
-on the page and needs nothing more. A handler that answers with HTML Citry
-serializes, for example to an htmx swap or a form posted to the handler's own
-URL, needs the nonce of the page that sent the call, which the event request
-does not have. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events setting:
+on the page and needs nothing more. A handler whose HTML answer is inserted
+into the page by a client of your own, such as htmx, needs the nonce of the
+page that sent the call, which the event request does not have. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events setting:
 
 ```python
 from citry_django import CitryDjangoExtension, page_csp_nonce
@@ -911,9 +910,12 @@ app = Citry(
 
 With it set, citry-django keeps the nonce in the session when it renders a
 page that holds a component that needs Vue, and `page_csp_nonce` gives it
-back. It needs Django's session middleware. The session keeps the nonce of
-the last such page a visitor loaded, so HTML for a page in an older tab
-carries the wrong nonce, and the browser refuses to start it.
+back. Pass the function itself: citry-django keeps the nonce only when the
+setting is `page_csp_nonce`. It needs Django's session middleware, and it
+saves the session on every such page view, creating one for a visitor who
+had none. The session keeps the nonce of the last such page a visitor
+loaded, so HTML for a page in another tab carries the wrong nonce, and the
+browser refuses to start it.
 
 ### Injection safety
 
