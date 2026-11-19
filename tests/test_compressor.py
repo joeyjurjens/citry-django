@@ -1,22 +1,24 @@
+import json
 import re
 from pathlib import Path
 
 import pytest
 from compressor.css import CssCompressor
 from django.conf import settings
-from django.template import Context, engines
+from django.template import engines
 
 from citry_django_compressor import GROUPS, Kind, collecting
-from islands import COMPRESSOR_AFTER_C1
+from islands import islands, runtime_scripts
 
 
 @pytest.fixture
 def render_page(rf):
-    """Render through the project's engine."""
+    """Render through the project's backend, which opens the page the
+    compressor works on."""
 
     def render_source(source, **context):
-        context.setdefault("request", rf.get("/"))
-        return engines["citry"].from_string(source).template.render(Context(context))
+        request = context.pop("request", rf.get("/"))
+        return engines["citry"].from_string(source).render(context, request)
 
     return render_source
 
@@ -135,64 +137,39 @@ class TestJavaScriptCallbacks:
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_component_callback_survives_compression(self, render_page):
-        """$component() callback should be present in compressed output."""
+        """A component with its own `js` is a Vue island, and its code stays
+        with the island: Citry's runtime checks those tags, so the compressor
+        never touches them."""
         html = render_page("<c-callback-component value='test123'/>")
-        # The callback should be in the HTML (either inline or in compressed file)
-        # Since it's marked as text/javascript, it should pass through or be compressed
-        assert "callback-test" in html
-        # The callback code should be present somewhere
-        assert "$component" in html or "callback" in html
+        assert 'class="callback-test"' in html
+        assert 'console.log("callback:"' in html
+        assert "CACHE/js" not in html
 
     @pytest.mark.usefixtures("compressor_enabled")
-    @COMPRESSOR_AFTER_C1
     def test_js_data_is_serialized(self, render_page):
-        """js_data() should be serialized into the page for $component callbacks."""
-        import base64
-        import json
-        import re
-
+        """js_data() reaches the island's configuration block."""
         html = render_page("<c-callback-component value='myvalue'/>")
-        # The component should render
-        assert "callback-test" in html
-        # js_data is serialized as a script that registers the data with Citry's manager
-        # Look for the registerComponentData call which contains the data
-        assert "registerComponentData" in html
-        # Extract the base64 encoded data from the registerComponentData call
-        match = re.search(r'registerComponentData\([^,]+,\s*[^,]+,\s*atob\("([^"]+)"\)\)', html)
-        assert match is not None, "Could not find registerComponentData call with base64 data"
-        encoded_data = match.group(1)
 
-        # Decode and verify the data structure
-        decoded = base64.b64decode(encoded_data).decode("utf-8")
-        data = json.loads(decoded)
-        assert "callback_value" in data
-        assert data["callback_value"] == "myvalue"
+        (config,) = islands(html).configs
+        assert "myvalue" in json.dumps(config)
 
     @pytest.mark.usefixtures("compressor_enabled")
-    @COMPRESSOR_AFTER_C1
     def test_multiple_callback_instances(self, render_page):
-        """Multiple instances should each get their own callback data."""
+        """Each instance keeps its own data."""
         html = render_page(
             "<c-callback-component value='first'/><c-callback-component value='second'/>"
         )
-        # Both instances should render
-        assert html.count("callback-test") == 2
-        # The callback code should be present (deduplicated)
-        assert "$component" in html or "callback" in html
-        # Both should have their data registered
-        assert "registerComponentData" in html
+        assert html.count('class="callback-test"') == 2
+        configs = json.dumps(islands(html).configs)
+        assert "first" in configs
+        assert "second" in configs
 
     @pytest.mark.usefixtures("compressor_enabled")
-    @COMPRESSOR_AFTER_C1
     def test_file_based_js_with_callback(self, render_page):
-        """File-based JS with $component callback should work."""
+        """A `js_file` component is an island too, with its data in its block."""
         html = render_page("<c-file-callback-component value='filetest'/>")
-        # The component should render
-        assert "file-callback-test" in html
-        # The file-based JS should be present (either inline or as URL)
-        assert "$component" in html or "file-callback" in html
-        # js_data should still be serialized
-        assert "registerComponentData" in html
+        assert 'class="file-callback-test"' in html
+        assert "filetest" in json.dumps(islands(html).configs)
 
 
 class TestDeduplication:
@@ -206,16 +183,23 @@ class TestDeduplication:
         assert html.count("scss-test") == 3
 
     @pytest.mark.usefixtures("compressor_enabled")
-    @COMPRESSOR_AFTER_C1
     def test_identical_js_deduplicated(self, render_page):
-        """Same JS from multiple components should only be compressed once."""
-        html = render_page("<c-callback-component value='a'/><c-callback-component value='b'/>")
-        # Both should render
-        assert html.count("callback-test") == 2
+        """Two islands of one component load its code once."""
+        html = render_page(
+            "<c-callback-component value='a'/><p>x</p><c-callback-component value='b'/>"
+        )
+        assert html.count('class="callback-test"') == 2
+        assert len(islands(html)) == 2
+        assert html.count('console.log("callback:"') == 1
 
 
 class TestMixedAssets:
     """Tests for components with both regular and precompiled assets."""
+
+    @pytest.fixture
+    def plain(self, component):
+        """A component that needs no Vue, with plain CSS."""
+        component('<div class="plain-css">x</div>', name="plain-css", css=".plain-css{color:red}")
 
     @pytest.mark.usefixtures("compressor_enabled")
     def test_regular_and_scss_land_in_one_file(self, render_page):
@@ -226,33 +210,33 @@ class TestMixedAssets:
         assert "mixed-test" in html
         assert "&.nested" not in html
 
-    @pytest.mark.usefixtures("compressor_enabled")
+    @pytest.mark.usefixtures("compressor_enabled", "plain")
     def test_regular_css_is_bundled_too(self, render_page):
         """Not only what needs a precompiler: plain CSS is minified and
         bundled the way `{% compress %}` would on any Django page."""
-        html = render_page("<c-swatch label='test'/>")
+        html = render_page("<c-plain-css/>")
         assert "/CACHE/css/" in html
-        assert ".swatch{" not in html
+        assert ".plain-css{" not in html
 
     @pytest.mark.usefixtures("compressor_enabled")
-    @COMPRESSOR_AFTER_C1
     def test_core_scripts_stay_where_citry_put_them(self, render_page):
-        """The runtime is the same on every page but Citry serves it itself,
-        and one instance's `js_data` belongs to that instance."""
+        """The runtime and an island's own tags are Citry's: its runtime
+        checks them, and one island's data belongs to that island."""
         html = render_page("<c-callback-component value='myvalue'/>")
-        assert "registerComponentData" in html
+        assert runtime_scripts(html) == 1
+        assert len(islands(html).configs) == 1
+        assert "CACHE/" not in html
 
-    @pytest.mark.usefixtures("compressor_enabled")
-    @COMPRESSOR_AFTER_C1
+    @pytest.mark.usefixtures("compressor_enabled", "plain")
     def test_multiple_components_compressed_together(self, render_page):
         """Two components with different CSS still produce one stylesheet.
 
         The whole reason to route Citry's assets through django-compressor: a
         page asks for one file however many components contributed to it.
         """
-        html = render_page("<c-scss-component/><c-swatch label='test'/>")
+        html = render_page("<c-scss-component/><c-plain-css/>")
         assert "scss-test" in html
-        assert "swatch" in html
+        assert "plain-css" in html
         assert html.count('rel="stylesheet"') == 1
 
 
@@ -368,9 +352,9 @@ class TestPageWideBundle:
     def test_two_regions_bundle_into_one_file(self, render_django):
         """The reason this hook exists.
 
-        `on_dependencies` fires while one region is being serialized and can
-        see no further, so two regions holding different components compress
-        to two files however little is in them. The page sees both.
+        One region's render can see no further than itself, so two regions
+        holding different components would compress to two files however
+        little is in them. The page sees both.
         """
         html = render_django("<head><c-css /></head><body><c-bundle-a />x<c-bundle-b /></body>")
 
@@ -453,16 +437,23 @@ class TestWhatIsBundled:
                 "Dependencies", (), {"js": [Script(url="https://cdn.example.com/lib.js")]}
             ),
         )
-        component("<section><c-kind-inline /><c-kind-file /></section>", name="kind-nested")
+        component(
+            "<div>second file</div>",
+            name="kind-file-two",
+            Dependencies=type("Dependencies", (), {"js": [Script(url=static("js/demosite.js"))]}),
+        )
+        component("<section><c-kind-file /><c-kind-file-two /></section>", name="kind-nested")
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
-    @COMPRESSOR_AFTER_C1
-    def test_inline_and_static_assets_are_bundled(self, render_django):
-        """Both ways of declaring an asset end up in a file of ours."""
+    def test_static_files_are_bundled_and_island_code_is_not(self, render_django):
+        """A component's own `js` makes it a Vue island, whose code stays as
+        Citry wrote it. A file a component that needs no Vue declares ends up
+        in a file of ours."""
         inline = render_django("<body><c-kind-inline /><c-js /></body>")
         from_file = render_django("<body><c-kind-file /><c-js /></body>")
 
-        assert "CACHE/js" in inline
+        assert "CACHE/js" not in inline
+        assert "console.log('inline')" in inline
         assert "CACHE/js" in from_file
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
@@ -478,7 +469,6 @@ class TestWhatIsBundled:
         assert "CACHE/js" not in html
 
     @pytest.mark.usefixtures("compressor_enabled", "kinds")
-    @COMPRESSOR_AFTER_C1
     def test_three_regions_of_mixed_assets_bundle_once(self, render_django):
         """Nested, repeated, and unbundleable, on one page.
 
@@ -486,12 +476,13 @@ class TestWhatIsBundled:
         could not read keeps its own place after it.
         """
         html = render_django(
-            "<body><c-kind-nested />x<c-kind-extern />y<c-kind-inline /><c-js /></body>"
+            "<body><c-kind-nested />x<c-kind-extern />y<c-kind-file /><c-js /></body>"
         )
+        sources = script_src_tags(html)
 
-        assert len(script_src_tags(html)) == 2
-        assert len([tag for tag in script_src_tags(html) if "CACHE/js" in tag]) == 1
-        assert 'src="https://cdn.example.com/lib.js"' in html
+        assert len(sources) == 2
+        assert "CACHE/js" in sources[0]
+        assert 'src="https://cdn.example.com/lib.js"' in sources[1]
 
 
 class TestPerInstanceAssets:
@@ -499,16 +490,19 @@ class TestPerInstanceAssets:
 
     @pytest.fixture
     def product(self, component):
-        """A component whose look and data differ per instance."""
+        """A component whose look differs per instance. It needs no Vue: an
+        island's tags never reach the compressor at all."""
+        from citry.ext.dependencies import Script
+        from django.templatetags.static import static
+
         component(
             '<article class="product">{{ name }}</article>',
             name="bundle-product",
             css=".product { color: var(--accent) }",
-            js="$component((el) => el)",
+            Dependencies=type("Dependencies", (), {"js": [Script(url=static("js/demosite.js"))]}),
             Kwargs=type("Kwargs", (), {"__annotations__": {"pk": int, "accent": str}}),
             template_data=lambda self, kwargs, slots: {"name": f"p{kwargs.pk}"},
             css_data=lambda self, kwargs, slots: {"accent": kwargs.accent},
-            js_data=lambda self, kwargs, slots: {"pk": kwargs.pk},
         )
 
     @staticmethod
@@ -524,14 +518,13 @@ class TestPerInstanceAssets:
         return set(re.findall(r"/static/CACHE/[a-z]+/[a-f0-9]+\.[a-z]+", html))
 
     @pytest.mark.usefixtures("compressor_enabled", "product")
-    @COMPRESSOR_AFTER_C1
     def test_many_instances_do_not_make_many_files(self, render_django):
         """A catalogue has 200k products; it does not have 200k stylesheets.
 
         Citry splits a component's assets in two. What it declares is the same
-        for every instance and worth sharing; what `css_data()` and
-        `js_data()` return belongs to one render. `shareable()` only offers
-        the first kind, so a primary key can never name a file.
+        for every instance and worth sharing; what `css_data()` returns
+        belongs to one render. `shareable()` only offers the first kind, so a
+        primary key can never name a file.
         """
         html = render_django(self.catalogue(5))
 
@@ -562,7 +555,6 @@ class TestPerInstanceAssets:
         assert set(elements) == set(blocks)
 
     @pytest.mark.usefixtures("compressor_enabled", "product")
-    @COMPRESSOR_AFTER_C1
     def test_what_belongs_to_one_render_stays_in_the_page(self, render_django):
         """Bundling it would put one page's data in a file meant to be shared,
         and give every page a file of its own."""

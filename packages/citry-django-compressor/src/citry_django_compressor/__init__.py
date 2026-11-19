@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import html
+import re
 from collections.abc import Callable
 from dataclasses import dataclass, field, replace
 from enum import StrEnum
@@ -16,8 +18,6 @@ from compressor.js import JsCompressor
 from compressor.utils import get_class
 from django.conf import settings
 
-from citry_django.page import current_page
-
 __all__ = ["CitryCompressorExtension"]
 
 
@@ -28,17 +28,76 @@ class Kind(StrEnum):
     JS = "js"
 
 
-#: Marks a tag the page may still bundle with the rest of its group. Written
-#: only while a page is collecting, and gone by the time the page is finished:
-#: either the tag was bundled into one that does not carry it, or the mark is
-#: taken off again.
-BUNDLE_ATTR = "data-citry-bundle"
+#: One attribute of a tag Citry wrote: a name, and a quoted value or none.
+ATTRIBUTE = re.compile(r"""([^\s=/>"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?""")
 
-#: The kinds that are the same on every page placing the component, and so are
-#: worth bundling. ``core`` is the client runtime a component registers against
-#: and ``variables`` is one instance's own ``js_data``, whose payload would
-#: otherwise land in a file meant to be shared between pages.
-BUNDLED_KINDS = frozenset({"component", "extra", "file"})
+#: A tag the page hands over: its name, its attributes, and any content.
+PAGE_TAG = re.compile(
+    r"<(?P<name>script|style|link)\b(?P<attrs>[^>]*?)/?>(?:(?P<content>.*?)</(?P=name)>)?",
+    re.DOTALL | re.IGNORECASE,
+)
+
+#: The attribute Citry writes on a component's own `<style>`, naming its
+#: class id. Only a `<style>` that carries it is a component's declared CSS;
+#: one without it holds one instance's `css_data()` values.
+CSS_CLASS_ATTR = "data-citry-css-class"
+
+
+@dataclass(frozen=True)
+class PageTag:
+    """One component tag from a finished page, read the way a dependency reads.
+
+    The page hands this package markup, not Citry's dependency objects, so a
+    tag is read back into the few things the rules below ask of an asset: its
+    URL or content, its attributes, and the component that declared it.
+    """
+
+    markup: str
+    name: str
+    attrs: dict[str, Any]
+    content: str | None
+
+    @classmethod
+    def read(cls, markup: str) -> PageTag | None:
+        """`markup` as a tag, or None when it is not one this package reads."""
+        match = PAGE_TAG.fullmatch(markup.strip())
+        if match is None:
+            return None
+        attrs: dict[str, Any] = {}
+        for name, double, single in ATTRIBUTE.findall(match.group("attrs")):
+            value = double if double else single
+            attrs[name.lower()] = html.unescape(value) if (double or single) else True
+        return cls(markup, match.group("name").lower(), attrs, match.group("content"))
+
+    @property
+    def kind(self) -> Kind:
+        return Kind.JS if self.name == "script" else Kind.CSS
+
+    @property
+    def url(self) -> str | None:
+        """The file this tag loads, if it loads one."""
+        if self.name == "script":
+            return self.attrs.get("src") or None
+        if self.name == "link" and self.attrs.get("rel") == "stylesheet":
+            return self.attrs.get("href") or None
+        return None
+
+    @property
+    def origin_class_id(self) -> str | None:
+        """The class id of the component whose own CSS this is, if it is."""
+        value = self.attrs.get(CSS_CLASS_ATTR)
+        return value if isinstance(value, str) else None
+
+    @property
+    def is_style(self) -> bool:
+        return self.kind is Kind.CSS
+
+    def typed(self, mimetype: str) -> PageTag:
+        """This tag, saying what compiles it."""
+        opened = f"<{self.name}"
+        start = self.markup.index(opened) + len(opened)
+        markup = f'{self.markup[:start]} type="{html.escape(mimetype)}"{self.markup[start:]}'
+        return replace(self, markup=markup, attrs={**self.attrs, "type": mimetype})
 
 
 @dataclass(frozen=True)
@@ -153,11 +212,9 @@ class Compression:
     worth handing over in the first place is Citry's question, and belongs to
     the extension below.
 
-    Both ways in end up at the same call. ``dependencies`` is for a render,
-    where Citry has objects; ``tags`` is for a finished page, where all that is
-    left is markup. django-compressor reads markup either way - that is what a
-    ``{% compress %}`` block hands it - so a dependency goes in as the tag
-    Citry would have written for it.
+    ``tags`` takes markup from a finished page, and django-compressor reads
+    markup - that is what a ``{% compress %}`` block hands it - so a tag goes
+    in as Citry wrote it.
     """
 
     def __init__(self, force: Callable[[], bool] | None = None) -> None:
@@ -172,7 +229,7 @@ class Compression:
         """
         return bool(self.force and self.force())
 
-    def reads(self, dep: Script | Style) -> bool:
+    def reads(self, dep: Script | Style | PageTag) -> bool:
         """Whether django-compressor can read this asset at all.
 
         Two things put one out of reach. An asset somewhere django-compressor
@@ -195,7 +252,7 @@ class Compression:
             return False
         return bool(settings.COMPRESS_ENABLED) or self.precompiles(dep)
 
-    def precompiles(self, dep: Script | Style) -> bool:
+    def precompiles(self, dep: Script | Style | PageTag) -> bool:
         """Whether django-compressor has a precompiler to run over `dep`.
 
         Keyed on the asset's own ``type``, because that attribute is the only
@@ -206,11 +263,6 @@ class Compression:
         """
         declared = dep.attrs.get("type")
         return bool(declared) and declared in dict(settings.COMPRESS_PRECOMPILERS)
-
-    def dependencies(self, deps: list[Any], kind: Kind) -> list[Any]:
-        """`deps` as django-compressor leaves them, one group at a time."""
-        build = GROUPS[kind][1]
-        return [asset.as_dependency(build) for asset in self.of(self.markup(deps), kind)]
 
     def tags(self, tags: list[str], kind: Kind) -> list[str]:
         """`tags` as django-compressor leaves them, still markup."""
@@ -261,10 +313,12 @@ class CitryCompressorExtension(Extension):
         class Dependencies:
             css = [Style(url=static("theme.scss"), attrs={"type": "text/x-scss"})]
 
-    Two hooks, because there are two moments. `on_dependencies` fires while one
-    Citry region is being serialized, and `on_page_assets` once the page holding
-    those regions is finished. Only the second sees a whole response, so only
-    the second can make one file of it.
+    It works on the finished page, through citry-django's `on_page_assets`
+    hook, which hands over the component tags of a response: one call for the
+    CSS and one for the JavaScript when the template names a `<c-css />` or
+    `<c-js />` spot, or one call per region without a spot. Citry's browser
+    runtime and each Vue island's own tags never reach it, so the assets of a
+    component that needs Vue stay as Citry wrote them.
 
     ``sort`` decides the order inside that file; see :meth:`bundled`.
     """
@@ -275,45 +329,39 @@ class CitryCompressorExtension(Extension):
         self.compression = Compression(force)
         self.sort = sort
 
-    def on_dependencies(self, ctx: Any) -> None:
-        """Replace what django-compressor will take with what it made."""
-        ctx.styles[:] = self.replaced(ctx.styles, Kind.CSS)
-        ctx.scripts[:] = self.replaced(ctx.scripts, Kind.JS)
-
     def on_page_assets(self, asset: Any) -> tuple[str, ...]:
-        """One page's worth of a group, as one file.
+        """One page's worth of component tags of one kind, as one file.
 
         This hook is what makes the difference between a bundle per `<c-*>`
         region and a bundle per response: two regions holding different
         components compress to two files however little is in them, because
         neither render can see the other.
         """
-        mine = [tag for tag in asset.tags if BUNDLE_ATTR in tag]
+        kind = Kind(str(asset.kind))
+        offered = [self.offered(tag, kind) for tag in asset.tags]
+        mine = [tag.markup for tag in offered if tag is not None]
         if not mine:
             return asset.tags
-        return self.bundled(Kind(str(asset.kind)), asset.tags, mine)
+        placed: list[str] = []
+        replacement = self.compression.tags(sorted(mine) if self.sort else mine, kind)
+        for original, tag in zip(asset.tags, offered, strict=True):
+            if tag is None:
+                placed.append(original)
+            elif replacement:
+                # The bundle takes the position of the first tag it swallowed.
+                placed.extend(replacement)
+                replacement = []
+        return tuple(placed)
 
-    def replaced(self, deps: list[Any], kind: Kind) -> list[Any]:
-        """`deps` with the ones worth compressing handled, now or by the page.
-
-        A page compresses for itself, and waiting for it is what keeps the
-        result free of repeats. Two regions placing the same stylesheet each
-        compress to a file of their own, and those two files are two different
-        URLs, so nothing downstream can tell they hold the same bytes. Left
-        alone, the two tags are the same tag, the page drops one, and what
-        finally goes to django-compressor is each stylesheet once.
-
-        Without a page there is nothing to wait for, and a region compresses
-        what it holds the way it always did.
-        """
-        typed = [self.typed(dep) for dep in deps]
-        ours = [dep for dep in typed if self.shareable(dep) and self.compression.reads(dep)]
-        if not ours:
-            return typed
-        if current_page.get() is not None:
-            return [self.marked(dep) if dep in ours else dep for dep in typed]
-        untouched = [dep for dep in typed if dep not in ours]
-        return untouched + self.compression.dependencies(ours, kind)
+    def offered(self, markup: str, kind: Kind) -> PageTag | None:
+        """`markup` typed for django-compressor, or None when it is not offered."""
+        tag = PageTag.read(markup)
+        if tag is None or tag.kind is not kind:
+            return None
+        tag = self.typed(tag)
+        if self.shareable(tag) and self.compression.reads(tag):
+            return tag
+        return None
 
     def typed(self, dep: Any) -> Any:
         """`dep`, saying what compiles it, when the project mapped its suffix.
@@ -325,15 +373,19 @@ class CitryCompressorExtension(Extension):
         if dep.attrs.get("type"):
             return dep
         mimetype = self.file_types().get(self.suffix_of(dep))
-        return dep if mimetype is None else replace(dep, attrs={**dep.attrs, "type": mimetype})
+        if mimetype is None:
+            return dep
+        if isinstance(dep, PageTag):
+            return dep.typed(mimetype)
+        return replace(dep, attrs={**dep.attrs, "type": mimetype})
 
     def suffix_of(self, dep: Any) -> str:
         """The suffix of the file this asset came from, as far as it is known.
 
-        A `Dependencies` entry is a URL and says so itself. A ``css_file`` or
-        ``js_file`` arrives as contents with no URL at all, so the suffix is
-        the component's to answer: `origin_class_id` names the class, and
-        Citry looks it up.
+        A `Dependencies` entry is a URL and says so itself. A ``css_file``
+        arrives as contents with no URL at all, so the suffix is the
+        component's to answer: `origin_class_id` names the class, and Citry
+        looks it up.
         """
         url = getattr(dep, "url", None)
         if url:
@@ -362,7 +414,8 @@ class CitryCompressorExtension(Extension):
             component = self.citry.get_component_by_class_id(class_id)
         except KeyError:
             return None
-        attribute = "css_file" if isinstance(dep, Style) else "js_file"
+        is_style = dep.is_style if isinstance(dep, PageTag) else isinstance(dep, Style)
+        attribute = "css_file" if is_style else "js_file"
         return getattr(component, attribute, None)
 
     @staticmethod
@@ -375,54 +428,21 @@ class CitryCompressorExtension(Extension):
         """
         return dict(getattr(settings, "CITRY_COMPRESSOR_FILE_TYPES", {}))
 
-    def shareable(self, dep: Script | Style) -> bool:
-        """Whether this asset is the same on every page placing the component.
+    def shareable(self, tag: PageTag) -> bool:
+        """Whether this tag is the same on every page placing the component.
 
-        Two things say it is not. A kind that belongs to one render cannot be
-        shared between pages: `core` is the client runtime and `variables` is
-        one instance's own `js_data`. And an asset Citry serves from its own
-        routes is not in staticfiles, where django-compressor reads.
+        A file is, unless Citry serves it from its own routes, which are not
+        in staticfiles where django-compressor reads. Inline content is only
+        when it is a component's own `<style>`, or one that declares a `type`
+        as a `Dependencies` entry does: a bare `<style>` holds one instance's
+        `css_data()` values, which would put one page's data in a file meant
+        to be shared.
         """
-        if getattr(dep, "kind", None) not in BUNDLED_KINDS:
-            return False
-        url = getattr(dep, "url", None)
-        prefix = self.citry.mounted_prefix
-        return not (url and prefix and url.startswith(prefix))
-
-    def bundled(self, kind: Kind, tags: tuple[str, ...], mine: list[str]) -> tuple[str, ...]:
-        """`tags` with everything bundleable replaced, in place, by one file.
-
-        In place because position is meaning: what a bundle does not swallow
-        still has to come before or after it. The bundle takes the position of
-        the first tag it swallowed.
-
-        What goes *inside* it is sorted, because a compressed file is named
-        after its own bytes. Components arrive in whatever order a page reaches
-        them, so two pages placing the same components differently would write
-        two files with identical contents in a different order, and a visitor
-        moving between them would download both. Sorting makes one set of
-        components one file, wherever they sit.
-
-        `sort=False` keeps the order the page has them in, for a project whose
-        component stylesheets rely on it.
-        """
-        theirs = [self.unmarked(tag) for tag in mine]
-        replacement = self.compression.tags(sorted(theirs) if self.sort else theirs, kind)
-        placed: list[str] = []
-        for tag in tags:
-            if BUNDLE_ATTR not in tag:
-                placed.append(tag)
-            elif replacement:
-                placed.extend(replacement)
-                replacement = []
-        return tuple(placed)
-
-    @staticmethod
-    def marked(dep: Any) -> Any:
-        """`dep`, saying the page still has this one to compress."""
-        return replace(dep, attrs={**dep.attrs, BUNDLE_ATTR: ""})
-
-    @staticmethod
-    def unmarked(tag: str) -> str:
-        """`tag` without the mark, which was never the page's to hand on."""
-        return tag.replace(f' {BUNDLE_ATTR}=""', "").replace(f" {BUNDLE_ATTR}", "")
+        url = tag.url
+        if url:
+            prefix = self.citry.mounted_prefix
+            return not (prefix and url.startswith(prefix))
+        # A type the author declared says the content is theirs to compile.
+        return tag.name == "style" and (
+            tag.origin_class_id is not None or bool(tag.attrs.get("type"))
+        )

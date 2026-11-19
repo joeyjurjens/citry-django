@@ -1,4 +1,5 @@
 import pytest
+from django.template import engines
 
 from citry_django.finders import ComponentFinder
 
@@ -73,12 +74,13 @@ class TestTheWholeChain:
         Citry resolves it against its `dirs`, the finder exposes those same
         directories to staticfiles, and django-compressor reads it from there
         like any other static file. Nothing in the compressor package knows
-        about components.
+        about components. It compresses on a page citry-django renders, so the
+        component is rendered from a Django template.
         """
-        from testproject.components.details.details import Details
+        import testproject.components.details.details  # noqa: F401 - registers it
 
         settings.COMPRESS_ENABLED = True
-        html = str(Details())
+        html = engines["citry"].from_string("<c-details/>").render({})
 
         assert "/static/CACHE/css/" in html
         assert "theme-details" in html

@@ -60,17 +60,6 @@ def islands(html: str) -> Islands:
 # each one fails the suite the moment it starts passing and its marker can
 # come off.
 
-#: Needs Citry C1, which hands an island's asset tags back apart from its HTML.
-NEEDS_C1 = pytest.mark.xfail(
-    strict=True, reason="step 5: needs Citry C1 (asset tags handed back apart from the HTML)"
-)
-
-#: The compressor moves to `on_page_assets`, and Citry fixes the SafeString URL.
-COMPRESSOR_AFTER_C1 = pytest.mark.xfail(
-    strict=True,
-    reason="step 5: the compressor moves to on_page_assets and needs Citry's SafeString URL fix",
-)
-
 #: The URL wrapper stops rewriting Citry's runtime route.
 URL_CLEANUP = pytest.mark.xfail(
     strict=True, reason="step 7: the runtime is served under its content-hashed name"
