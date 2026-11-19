@@ -9,10 +9,9 @@ template (see `foreign.py`).
 This module answers three questions for both places: does a render become
 an island (Citry's `needs_browser_runtime()` decides), may the island stand
 where the template put it, and may it be built with the configured asset
-strategy. The last two are refusals: a Vue
-host inside a `<p>` or a `<table>`, or an island written without its
-scripts, breaks in the browser without any error, so citry-django raises
-instead.
+strategy. The last two are refusals: a Vue host inside a `<p>` or a
+`<table>`, or an island written without its scripts, breaks in the browser
+without any error, so citry-django raises instead.
 """
 
 from __future__ import annotations

@@ -269,8 +269,11 @@ Vue cannot own that content from inside a separate app. citry-django then
 raises `IslandSlotError`. Write the Django tag as `<c-if>` or `<c-for>`, so
 both components stay in one island.
 
-A page loads Citry's browser runtime once however many islands it holds;
-see [Where a component's assets go](#where-a-components-assets-go). An
+A page rendered through a Django template loads Citry's browser runtime
+once however many islands it holds; see
+[Where a component's assets go](#where-a-components-assets-go). A
+component you render straight from Python has no such page, so each island
+inside it writes its own copy, and the browser runs it once. An
 island can update only the components inside it: a server
 event in one row cannot re-render another row. Put components that work
 together in one Citry component, so they share an island.
@@ -381,8 +384,9 @@ app = Citry(
 )
 ```
 
-Citry then calls it once per server event, after Django's and Citry's CSRF
-checks, the State check and the handler. The component gets what a region
+Citry then calls it once for each server event call whose handler returns
+a component, after Django's and Citry's CSRF checks, the State check and
+the handler. The component gets what a region
 gets on the page: `request` and your context processors' values as
 template globals, those values under `self.inject("django")`, and Django's
 active language as its locale.
@@ -433,9 +437,11 @@ The page sorts the tags into three groups:
 
 - Citry's browser runtime and its preload hints, written once per page;
 - component CSS and JavaScript, written once per page;
-- each island's own stylesheet link, configuration block and start script,
-  all kept, because each names its own island. The browser downloads a
-  stylesheet two islands link only once.
+- each island's own stylesheet, configuration block and start script, all
+  kept, because each names its own island. With
+  [Citry's routes](#citrys-own-routes) mounted, the stylesheet is a link,
+  and the browser downloads a file two islands link only once. Without
+  them it is an inline `<style>`, repeated per island.
 
 In a spot, the runtime tags come first, then the component tags, then the
 island tags.
@@ -445,9 +451,17 @@ carries its own messages in its configuration block, and the i18n runtime
 they share is written once.
 
 Nothing in the markup refers back to the page that produced it, so a region's
-HTML stands on its own. `{% cache %}` around one works. So does a rendered
-fragment you stored and send back later, and a base template you kept in a
-dict, which is the kind of thing an admin does more often than it sounds.
+HTML stands on its own. `{% cache %}` around a region that needs no Vue
+works. So does a rendered fragment you stored and send back later, and a
+base template you kept in a dict, which is the kind of thing an admin does
+more often than it sounds.
+
+Do not cache a region that holds an island. Its State tokens expire, its
+CSP nonce belongs to an earlier response, and a cached copy does not make
+Django send the CSRF cookie that the island's server events need.
+
+The page collects nothing under `CITRY_DEPS_STRATEGY = "fragment"`: each
+region keeps the tags Citry places for it.
 
 ### Declaring what a component needs
 
@@ -879,6 +893,12 @@ class Page(Component):
 ```
 
 Extend in the Django template and put components inside it.
+
+The same goes for a component that writes the whole document, with
+`<!doctype html>` and `<head>`. Put that skeleton in a Django template,
+with `<c-css />` in its `<head>` and `<c-js />` before `</body>`. As a
+region, such a component gets its tags written before the doctype when it
+needs Vue, where the browser does not read them as part of `<head>`.
 
 ### `{% verbatim %}` still picks up an identity marker
 

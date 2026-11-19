@@ -126,6 +126,37 @@ def test_dependency_placeholder_keeps_its_authored_position(component, render_dj
     assert html.rindex("startDocument") < html.index("MIDDLE")
 
 
+def test_a_component_rendered_from_python_writes_tags_beside_each_island(component) -> None:
+    """Without a citry-django page, nothing collects the islands' tags.
+
+    Each island inside the component's Django loop writes its own tags
+    beside itself, so the runtime is there once per island, and the
+    component's own `<c-js/>` does not collect them.
+    """
+    widget = component(
+        "<b>{{ value }}</b>",
+        name="serialization-direct-widget",
+        js='console.log("direct")',
+    )
+    del widget
+    page = component(
+        """
+        <main>
+          BEFORE<c-js/>MIDDLE
+          {% for value in values %}
+            <c-serialization-direct-widget c-value="value"/>
+          {% endfor %}
+        </main>
+        """
+    )
+
+    html = str(page(values=["a", "b"]))
+
+    assert runtime_scripts(html) == 2
+    assert len(islands(html).starts) == 2
+    assert "<!--citry-django" not in html
+
+
 def test_a_django_tag_that_changes_a_reached_marker_fails_loudly() -> None:
     app = Citry(extensions=[CitryDjangoExtension()])
 
