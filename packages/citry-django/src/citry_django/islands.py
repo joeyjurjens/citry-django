@@ -13,9 +13,10 @@ strategy. The last two are refusals: a Vue host inside a `<p>` or a
 `<table>`, or an island written without its scripts, breaks in the browser
 without any error, so citry-django raises instead.
 
-Inside a region, which components in Django blocks become islands is
-decided only once the whole region has rendered (see `PendingIslands`),
-because a block cannot see whether a component around it will be a Vue app.
+Which components in Django blocks become islands is decided only once the
+whole region has rendered, or, for a component rendered straight from
+Python, once its root component has (see `PendingIslands`): a block cannot
+see whether a component around it will be a Vue app.
 """
 
 from __future__ import annotations
@@ -24,6 +25,7 @@ import re
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
+from weakref import WeakKeyDictionary
 
 from citry import CitryRender, OutsideSlotContentError
 from django.core.exceptions import ImproperlyConfigured
@@ -84,9 +86,6 @@ class IslandOptions:
     #: Inside a region: where the region's Django blocks wait for it to
     #: decide which of their components become islands.
     pending: PendingIslands | None = None
-    #: In a server event's render: the component the event renders is
-    #: already a Vue app, so every component in a Django block joins it.
-    inside_app: bool = False
 
 
 @dataclass(frozen=True)
@@ -116,23 +115,32 @@ class PendingIslands:
     another Vue app would be a second app inside the first. A block renders
     before the components around it have finished, so it cannot tell. It
     hands its render here instead, and the region decides once it has
-    rendered completely (see `settle`).
+    rendered completely (see `settle`). Without a region, as for a
+    component rendered straight from Python or by a server event, its root
+    component plays the region's part (see `pending_for_root`).
     """
 
-    def __init__(self) -> None:
-        # In the order the blocks finished, which puts a block inside
-        # another block's component before that outer block.
+    def __init__(self, options: IslandOptions | None = None) -> None:
+        # Usually in the order the blocks finished, which puts a block inside
+        # another block's component first; `settle` does not rely on it.
         self.blocks: list[CitryRender] = []
+        # What the islands are built with, for a root component's blocks;
+        # a region passes its own when it settles.
+        self.options = options
+        # Why the region became one Vue app although its blocks held
+        # components that could have been islands, for the error message
+        # when Citry then refuses the region.
+        self.reason: str | None = None
 
     def add(self, block: CitryRender) -> None:
         self.blocks.append(block)
 
     def settle(self, region: CitryRender, *, csp_nonce: str | None) -> bool:
-        """Turn into islands the components that stand on their own; return whether any did.
+        """Make islands of the components that can each be their own Vue app; say if any.
 
-        Inner blocks come first. Each component there that needs Vue on its
-        own becomes a candidate; a candidate inside it stops being one,
-        because it will be part of that component's app. Then:
+        Each component in a block that needs Vue on its own becomes a
+        candidate. A candidate inside another candidate is not one, because
+        it will be part of that component's app. Then:
 
         - When something else in the region still needs Vue, the region is
           one Vue app and holds every component in its blocks. Citry writes
@@ -142,10 +150,18 @@ class PendingIslands:
           slot content from outside it, it cannot stand alone, so the region
           becomes one Vue app instead, as above.
         """
+        # A block the region does not hold, such as one under a marker that
+        # a Django tag escaped, never reaches the page.
+        reached = renders_in(region)
         candidates: list[Candidate] = []
         for block in self.blocks:
+            if id(block) not in reached:
+                continue
             for holder, index, child in vue_children(block):
-                # A candidate inside `child` is part of child's app now.
+                # A block inside a candidate is part of that candidate's app.
+                if any(id(holder) in renders_in(other.child) for other in candidates):
+                    continue
+                # And a candidate inside `child` is part of child's app now.
                 held = renders_in(child)
                 inside = [candidate for candidate in candidates if id(candidate.holder) in held]
                 for candidate in inside:
@@ -163,8 +179,8 @@ class PendingIslands:
                     serialize_island(candidate.child, csp_nonce=csp_nonce)
                     for candidate in candidates
                 ]
-            except IslandSlotError:
-                pass
+            except IslandSlotError as error:
+                self.reason = str(error.reason)
             else:
                 for candidate, html in zip(candidates, built, strict=True):
                     candidate.holder.parts[candidate.index] = html
@@ -172,6 +188,35 @@ class PendingIslands:
         for candidate in candidates:
             candidate.come_back()
         return False
+
+
+#: The Django blocks of a component tree rendered without a region, keyed by
+#: its root component, until that root has rendered. A weak key, so a render
+#: that fails before then leaves nothing behind.
+ROOT_PENDING: WeakKeyDictionary[Any, PendingIslands] = WeakKeyDictionary()
+
+
+def pending_for_root(root: Any, options: IslandOptions) -> PendingIslands:
+    """Where a block outside any region waits for its root component to finish."""
+    pending = ROOT_PENDING.get(root)
+    if pending is None:
+        pending = ROOT_PENDING[root] = PendingIslands(options)
+    return pending
+
+
+def settle_root(component: Any, rendered: Any) -> IslandOptions | None:
+    """Decide the islands of a root component's blocks.
+
+    Called once the root component has rendered, from citry-django's
+    `on_component_rendered` hook, and its render plays the region's part.
+    Returns the options the islands were built with, or None when none were,
+    so the caller can do for them what a region does for its own.
+    """
+    pending = ROOT_PENDING.pop(component, None)
+    if pending is None or not isinstance(rendered, CitryRender):
+        return None
+    options = pending.options or IslandOptions(csp_nonce=None)
+    return options if pending.settle(rendered, csp_nonce=options.csp_nonce) else None
 
 
 def vue_children(render: CitryRender) -> Iterator[tuple[CitryRender, int, CitryRender]]:
@@ -269,6 +314,11 @@ def request_csp_nonce(request: Any) -> str | None:
 class IslandSlotError(TypeError):
     """A component that needs Vue holds slot content written outside it."""
 
+    def __init__(self, message: str, reason: str = "") -> None:
+        super().__init__(message)
+        #: One sentence naming the component and why it cannot stand alone.
+        self.reason = reason
+
 
 def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
     """`render` serialized as its own island, or None when it needs no Vue.
@@ -287,7 +337,12 @@ def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
     try:
         html = serialized(render, strategy=strategy, csp_nonce=csp_nonce)
     except OutsideSlotContentError as error:
-        raise IslandSlotError(outside_slot_message(render)) from error
+        name = type(render.context.component).__name__
+        reason = (
+            f"{name} needs Vue but cannot be its own Vue app, because it holds content that "
+            "the component around it passed in."
+        )
+        raise IslandSlotError(outside_slot_message(render), reason) from error
     return html
 
 
@@ -302,18 +357,26 @@ def outside_slot_message(render: Any) -> str:
     )
 
 
-def serialize_region(render: Any, *, csp_nonce: str | None) -> tuple[str, bool]:
-    """A region's output, and whether it is an island itself."""
+def serialize_region(
+    render: Any, *, csp_nonce: str | None, reason: str | None = None
+) -> tuple[str, bool]:
+    """A region's output, and whether it is an island itself.
+
+    `reason` says why the region is one Vue app although components in its
+    Django blocks could have been islands; an error about the region names it.
+    """
     island = render.needs_browser_runtime()
     strategy = deps_strategy()
     # Under "simple" or "ignore" Citry would write the island without its
     # scripts, so it would do nothing in the browser.
     if island:
         refuse_strategy(strategy)
-    return serialized(render, strategy=strategy, csp_nonce=csp_nonce), island
+    return serialized(render, strategy=strategy, csp_nonce=csp_nonce, reason=reason), island
 
 
-def serialized(render: Any, *, strategy: str, csp_nonce: str | None) -> str:
+def serialized(
+    render: Any, *, strategy: str, csp_nonce: str | None, reason: str | None = None
+) -> str:
     """`render`'s HTML, with its asset tags beside it for the page to collect.
 
     Citry hands the tags back apart from the HTML, so citry-django writes them
@@ -329,7 +392,7 @@ def serialized(render: Any, *, strategy: str, csp_nonce: str | None) -> str:
     except (TypeError, ValueError) as error:
         # Citry refuses Django output it cannot put inside a Vue app; say
         # what to change in the Django template instead.
-        explained = refused_content(error)
+        explained = refused_content(error, reason)
         if explained is None:
             raise
         raise explained from error

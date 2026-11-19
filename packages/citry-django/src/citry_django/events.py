@@ -44,7 +44,6 @@ from django.http import HttpRequest
 from .context import HOST_PROVIDE
 from .engine import context_processors
 from .i18n import LOCALE_PROVIDE, locale_context
-from .islands import ISLANDS_PROVIDE, IslandOptions
 from .registry import get_citry_app
 
 #: The session key the nonce is kept under.
@@ -91,9 +90,6 @@ def render_inputs(event_request: EventRequest) -> RenderInputs:
         `request` and Django's context processors as template globals; the
         same context processor values under `inject("django")`; and, when
         the app has i18n, Django's active language as the render's locale.
-        It also tells citry-django's Django blocks that they render inside a
-        Vue app, so a component that needs Vue in such a block stays part of
-        that app.
     """
     # Only Django's own request reaches the context processors, which expect
     # one; under another host there is nothing Django-shaped to give.
@@ -105,12 +101,7 @@ def render_inputs(event_request: EventRequest) -> RenderInputs:
         template_globals["request"] = request
     # A region provides the page's whole Django context here. An event has no
     # view, so only what the context processors give is there.
-    provides: dict[str, Any] = {
-        HOST_PROVIDE: dict(processors),
-        # The component the event renders is a Vue app already, so components
-        # in its Django blocks join it rather than becoming islands of their own.
-        ISLANDS_PROVIDE: IslandOptions(csp_nonce=None, request=request, inside_app=True),
-    }
+    provides: dict[str, Any] = {HOST_PROVIDE: dict(processors)}
     locale = locale_context(get_citry_app())
     if locale is not None:
         provides[LOCALE_PROVIDE] = locale

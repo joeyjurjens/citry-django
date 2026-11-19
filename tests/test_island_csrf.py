@@ -51,3 +51,11 @@ def test_the_token_is_not_written_into_the_page(render_django, rf):
     request = rf.get("/")
     html = render_django("<c-csrf-live/>", request=request)
     assert request.META["CSRF_COOKIE"] not in html
+
+
+def test_an_island_in_a_django_block_of_a_region_asks_for_the_token(render_django, rf):
+    """The region itself needs no Vue here; only the islands its Django
+    block builds once the region has rendered do."""
+    request = rf.get("/")
+    html = render_django("<c-csrf-loop c-ns='[1]'/>", request=request)
+    assert cookie_sent(request, html)

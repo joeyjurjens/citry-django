@@ -23,8 +23,12 @@ class IslandContentError(ValueError):
     """Django output inside an interactive component that Vue cannot hold."""
 
 
-#: How Citry names the HTML a template with Django tags produced.
-STATIC_HTML = "HTML that Citry did not compile"
+#: How Citry names the HTML a template with Django tags produced, at the
+#: start of each message about it.
+STATIC_HTML = re.escape(
+    "HTML that Citry did not compile (such as the output of a template whose {% %} tags "
+    "Django renders)"
+)
 
 
 @dataclass(frozen=True)
@@ -41,9 +45,7 @@ class Refusal:
 
 REFUSALS = (
     Refusal(
-        re.compile(
-            rf"{STATIC_HTML} \(.*?\) is not (?:a complete HTML fragment|well-formed HTML)", re.S
-        ),
+        re.compile(rf"{STATIC_HTML} is not (?:a complete HTML fragment|well-formed HTML)"),
         "A Django tag inside an interactive component wrote HTML that is not complete: it "
         "leaves a tag open, closes one it did not open, or the browser would read it "
         "differently than it was written. Vue inserts Django's output as finished blocks of "
@@ -69,21 +71,21 @@ REFUSALS = (
         "it, in Citry syntax (<c-if> and <c-for> for {{% if %}} and {{% for %}}).",
     ),
     Refusal(
-        re.compile(rf"{STATIC_HTML} \(.*?\) holds a <script> element", re.S),
+        re.compile(rf"{STATIC_HTML} holds a <script> element"),
         "A template with Django tags wrote a <script> inside an interactive component. Vue "
         "inserts Django's output as a block of HTML, and the browser does not run a script "
         "inserted that way, so it would run only on the first load of the page. Move the "
         "script into the component's js, or onto the page outside the component.",
     ),
     Refusal(
-        re.compile(rf"{STATIC_HTML} \(.*?\) holds a <noscript> element", re.S),
+        re.compile(rf"{STATIC_HTML} holds a <noscript> element"),
         "A template with Django tags wrote a <noscript> inside an interactive component. "
         "Vue inserts Django's output as a block of HTML that some browsers read with scripts "
         "turned off, so they would show and run what the <noscript> holds. Move the "
         "<noscript> onto the page outside the component.",
     ),
     Refusal(
-        re.compile(rf"{STATIC_HTML} \(.*?\) cannot sit inside <", re.S),
+        re.compile(rf"{STATIC_HTML} cannot sit inside <"),
         "A template with Django tags wrote HTML inside <svg>, <math>, or an element that "
         "holds only text, such as <textarea>, inside an interactive component. Vue inserts "
         "Django's output with the HTML parser, which reads it differently there. Write that "
@@ -91,8 +93,8 @@ REFUSALS = (
     ),
     Refusal(
         re.compile(
-            r"(?P<name>\w+) has Vue syntax \((?P<syntax>.*?)\) in a template with foreign spans",
-            re.S,
+            r"(?P<name>\w+) has Vue syntax \((?P<syntax>[^()]*(?:\([^()]*\)[^()]*)*)\) "
+            r"in a template with foreign spans"
         ),
         "{name} uses Vue syntax ({syntax}) in a template that also has Django tags, inside an "
         "interactive component. A template with Django tags is written as HTML that Vue does "
@@ -104,11 +106,20 @@ REFUSALS = (
 )
 
 
-def refused_content(error: Exception) -> IslandContentError | None:
-    """`error` in citry-django's words, or None when it is not one of these refusals."""
+def refused_content(error: Exception, reason: str | None = None) -> IslandContentError | None:
+    """`error` in citry-django's words, or None when it is not one of these refusals.
+
+    `reason` says why the HTML ended up inside a Vue app at all, when that is
+    not the component the error names.
+    """
     text = str(error)
     for refusal in REFUSALS:
-        match = refusal.signature.search(text)
+        # Citry's message starts with the reason; anything after it, such as
+        # a preview of the HTML, may hold a visitor's text.
+        match = refusal.signature.match(text)
         if match is not None:
-            return IslandContentError(refusal.message.format(**match.groupdict()))
+            message = refusal.message.format(**match.groupdict())
+            if reason:
+                message += f" The whole region is one Vue app here: {reason}"
+            return IslandContentError(message)
     return None

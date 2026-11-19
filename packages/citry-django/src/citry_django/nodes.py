@@ -219,7 +219,7 @@ class CitryFragment(template.Node):
         # Before the region itself: once components in its Django blocks are
         # islands, the region may need no Vue of its own.
         inner_islands = pending.settle(rendered, csp_nonce=nonce)
-        html, island = serialize_region(rendered, csp_nonce=nonce)
+        html, island = serialize_region(rendered, csp_nonce=nonce, reason=pending.reason)
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
         if island or inner_islands:
             # An island may hold Events, whose calls need the CSRF cookie and,

@@ -33,7 +33,7 @@ It is offered only the tags of components that need no Vue. A component that nee
 
 Of the tags it is offered, it takes the ones Citry reports as the same on every page that places the component: a component's own CSS and JavaScript, and its `Dependencies`, whether a file under `COMPRESS_URL` or inline content. Citry says this for each tag (see `SerializedAssetEntry` in Citry's asset placement docs), and citry-django passes it along with the tags.
 
-It leaves alone the `<style>` holding one instance's `css_data()` values, so one page's data never ends up in a shared file, and any tag Citry could not describe, such as one another extension added. It also leaves alone a file somewhere else, such as a CDN, and a file Citry serves from its own routes.
+It leaves alone the `<style>` holding one instance's `css_data()` values, so one page's data never ends up in a shared file, and any tag Citry marks as possibly holding one render's data, such as one an `on_dependencies` hook added or rebuilt. It also leaves alone a file somewhere else, such as a CDN, and a file Citry serves from its own routes.
 
 Results come from django-compressor's cache where that is allowed, keyed the way the `{% compress %}` tag keys it, on a digest of the content plus the mtimes of its sources. Without that every render recompiles its SCSS from scratch.
 

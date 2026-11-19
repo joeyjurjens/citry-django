@@ -21,7 +21,13 @@ from django.utils.safestring import mark_safe
 from .engine import explain_tokenizer_disagreement, get_django_engine
 from .events import remember_page_nonce
 from .expressions import is_dotted_path
-from .islands import ensure_csrf_cookie, island_options, serialize_island, vue_children
+from .islands import (
+    ensure_csrf_cookie,
+    island_options,
+    pending_for_root,
+    serialize_island,
+    vue_children,
+)
 from .nodes import CitryParser, CitrySegment
 from .registry import get_tokenizer
 
@@ -118,26 +124,24 @@ class _BlockState:
         return self.with_islands(block)
 
     def with_islands(self, block: CitryRender) -> CitryRender:
-        """`block`, with the components in it that need Vue placed where they belong.
+        """`block`, handed on so that each component in it that needs Vue can become an island.
 
         The text around a segment is Django's, so Citry writes it as HTML it did
         not compile. A component that needs Vue cannot sit inside one of its
         elements in the same Vue app, so it becomes its own island where it
-        stands, unless a Vue app already holds the block:
-
-        - In a server event's render the component the event renders is
-          that app, so every component stays live and joins it.
-        - Inside a region, the region decides once it has rendered (see
-          `PendingIslands`), because only then is it known whether a
-          component around the block needs Vue.
-        - A component rendered straight from Python has no region above it,
-          so each component that needs Vue becomes an island now.
+        stands, unless a Vue app already holds the block. Only the whole
+        render can tell (see `PendingIslands`), so the block waits for the
+        region around it, or, without one, for its root component: a
+        component rendered straight from Python or by a server event.
         """
-        if self.options.inside_app:
-            return block
         if self.options.pending is not None:
             self.options.pending.add(block)
             return block
+        component = getattr(self.citry_context, "component", None)
+        if component is not None:
+            pending_for_root(component.root, self.options).add(block)
+            return block
+        # A render with no component at all has nothing to wait for.
         for holder, index, child in list(vue_children(block)):
             holder.parts[index] = self.island(child)
         return block

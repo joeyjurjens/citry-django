@@ -12,7 +12,6 @@ from django.test import Client
 from django.utils import translation
 
 from citry_django import render_inputs
-from citry_django.islands import ISLANDS_PROVIDE
 from citry_django.registry import citry_app_source
 from events_site.app import Counter, app
 
@@ -114,9 +113,7 @@ def test_only_request_and_context_processors_are_given(rf):
     inputs = render_inputs(EventRequest(native=request))
 
     assert set(inputs) == {"template_globals", "provides"}
-    # The third tells Django blocks that the render is inside a Vue app.
-    assert set(inputs["provides"]) == {"django", "citry_i18n", ISLANDS_PROVIDE}
-    assert inputs["provides"][ISLANDS_PROVIDE].inside_app
+    assert set(inputs["provides"]) == {"django", "citry_i18n"}
     processors = set(inputs["provides"]["django"])
     assert set(inputs["template_globals"]) == processors | {"request"}
 

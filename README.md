@@ -264,7 +264,9 @@ each iteration's component is the root of its own app. A Citry `<c-for>` that
 repeats an interactive component inside one island still needs `#c-key`.
 
 A component becomes an island only when no Vue app holds it already. So
-citry-django waits until the whole `<c-*>` region has rendered, then decides:
+citry-django waits until the whole `<c-*>` region has rendered, or, for a
+component you render straight from Python or that a server event renders,
+until that component has. Then it decides:
 
 - When nothing else in the region needs Vue, each such component becomes its
   own island, as in the list above.
@@ -275,13 +277,8 @@ citry-django waits until the whole `<c-*>` region has rendered, then decides:
 - The same happens when such a component holds content that the component
   around it passes in, between its tags or in a `<c-fill>`. Vue cannot own
   that content from a separate app, so the component cannot be an island of
-  its own.
-
-A component you render straight from Python has no region around it, so
-each such component becomes an island where it stands. When it holds
-content from the component around it, citry-django raises
-`IslandSlotError`. Write the Django tag as `<c-if>` or `<c-for>`, so both
-components stay in one island.
+  its own. If Citry then refuses such a region in a Django template, the
+  error names that component.
 
 A page rendered through a Django template loads Citry's browser runtime
 once however many islands it holds; see
@@ -342,6 +339,14 @@ render again for the event, with what
 them. So put Django content that must stay after a server event into a
 component's template, and render that component inside the one the
 handler returns.
+
+One case does not work yet. Inside a Django block, an element with a
+`{{ }}` in an attribute value and a Citry `{{ }}` in its text, such as
+`{% if %}<p title="{{ note }}">{{ note }}</p>{% endif %}`, renders on the
+page, but a server event that renders it again fails, because Citry
+refuses it there. Until Citry accepts it, write the text value as an
+expression Django renders, for example `{{ note|escape }}` or
+`{{ item.note }}`.
 
 ## Writing an input
 
@@ -454,10 +459,7 @@ a component, after Django's and Citry's CSRF checks, the State check and
 the handler. The component gets what a region
 gets on the page: `request` and your context processors' values as
 template globals, those values under `self.inject("django")`, and Django's
-active language as its locale. It also tells citry-django that a component
-in a Django block is part of the Vue app the event renders, rather than an
-island of its own. Without it, a server event whose render reaches such a
-component fails.
+active language as its locale.
 
 The values come from the server event's request, not from the page's:
 
@@ -509,8 +511,8 @@ The page sorts the tags into three groups:
   configuration block and start script is kept, because each names its own
   island. With [Citry's routes](#citrys-own-routes) mounted, the stylesheet
   is a link, and islands that load the same file share one link that names
-  all of them. Without the routes it is an inline `<style>`, repeated per
-  island.
+  all of them. Without the routes it is an inline `<style>`, and islands
+  with the same styles share one that names all of them.
 
 In a spot, the runtime tags come first, then the component tags, then the
 island tags.

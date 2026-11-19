@@ -16,7 +16,7 @@ import pytest
 from citry import Component
 from django.test import Client
 
-from citry_django.content import IslandContentError
+from citry_django.content import IslandContentError, refused_content
 from citry_django.registry import citry_app_source
 from events_site.app import app
 from islands import islands, runtime_scripts
@@ -231,17 +231,134 @@ def test_a_server_event_renders_django_tags_in_a_fill_again():
     client = Client()
     page = client.get("/fills/")
     assert page.status_code == 200
-    configuration = panel_configuration(page.content.decode())
+
+    action = send_event(client, page.content.decode(), "Panel_", "bump")
+
+    blocks = [
+        record["html"]
+        for occurrence in action["prepared"]["occurrences"]
+        for record in occurrence["preparedData"].get("opaqueHtml", {}).values()
+    ]
+    # The fill Help wrote, rendered by Django again for this request.
+    assert any('<span class="guide">Read the guide</span>' in block for block in blocks)
+    # `request` is the server event's own request, which render_inputs gives.
+    assert any('<i class="path">/citry/ext/events/' in block for block in blocks)
+
+
+class Note(Component):
+    """A component without Vue with a `{{ }}` attribute and a Citry `{{ }}` in a Django block."""
+
+    citry = app
+
+    class Kwargs:
+        note: str = ""
+
+    def template_data(self, kwargs: Any, slots: Any) -> dict[str, Any]:
+        return {"note": kwargs.note}
+
+    template = """
+        {% if True %}<p class="note" title="{{ note }}">{{ note }}</p>{% endif %}
+    """
+
+
+class NotePanelState:
+    count: int = 0
+
+
+class NotePanel(Component):
+    citry = app
+    State = NotePanelState
+
+    class Events:
+        def bump(self, state: NotePanelState) -> Any:
+            state.count += 1
+            return NotePanel()
+
+    template = """
+        <div><button @c-click="bump">+</button><c-fill-note note="a" /></div>
+    """
+
+
+app.register(Note, "fill-note")
+app.register(NotePanel, "fill-note-panel")
+
+
+@pytest.mark.django_db
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason=(
+        "Citry gap: a server event's render refuses the Markup part that a Citry {{ }} in "
+        "the text of an element with a {{ }} attribute gives inside a Django block, which "
+        "the page accepts"
+    ),
+)
+def test_a_server_event_renders_a_citry_value_in_a_template_with_django_tags(render_django):
+    client = Client()
+    html = render_django("<c-fill-note-panel/>")
+
+    action = send_event(client, html, "NotePanel_", "bump")
+
+    assert '<p class=\\"note\\" title=\\"a\\">a</p>' in json.dumps(action)
+
+
+class DjangoNote(Component):
+    """The same value, written as an expression Django renders."""
+
+    citry = app
+
+    class Kwargs:
+        note: str = ""
+
+    def template_data(self, kwargs: Any, slots: Any) -> dict[str, Any]:
+        return {"note": kwargs.note}
+
+    template = """
+        {% if True %}<p class="note" title="{{ note }}">{{ note|escape }}</p>{% endif %}
+    """
+
+
+class DjangoNotePanel(Component):
+    citry = app
+    State = NotePanelState
+
+    class Events:
+        def bump(self, state: NotePanelState) -> Any:
+            return DjangoNotePanel()
+
+    template = """
+        <div><button @c-click="bump">+</button><c-fill-django-note note="a" /></div>
+    """
+
+
+app.register(DjangoNote, "fill-django-note")
+app.register(DjangoNotePanel, "fill-django-note-panel")
+
+
+@pytest.mark.django_db
+def test_a_value_django_renders_works_in_a_server_events_render(render_django):
+    """The way around the gap above, which the README gives."""
+    html = render_django("<c-fill-django-note-panel/>")
+
+    action = send_event(Client(), html, "DjangoNotePanel_", "bump")
+
+    assert '<p class=\\"note\\" title=\\"a\\">a</p>' in json.dumps(action)
+
+
+def send_event(client: Client, html: str, class_prefix: str, handler: str) -> dict:
+    """Send `handler` for the first component whose class id starts with
+    `class_prefix`, the way the browser runtime does, and return its action."""
+    configuration = app_configuration(html, class_prefix)
     manifest = configuration["manifest"]
     owner = next(
         item
         for item in manifest["occurrences"]
-        if item.get("eventContext", {}).get("componentClassId", "").startswith("Panel_")
+        if item.get("eventContext", {}).get("componentClassId", "").startswith(class_prefix)
     )
     context = owner["eventContext"]
     call = {
         "componentClassId": context["componentClassId"],
-        "handlerName": "bump",
+        "handlerName": handler,
         "args": {},
         "callerRenderId": context["serverRenderId"],
         "stateToken": context["stateToken"],
@@ -268,28 +385,19 @@ def test_a_server_event_renders_django_tags_in_a_fill_again():
             "X-Citry-Vue-Revision": "0",
         },
     )
-
     assert response.status_code == 200, response.content
     [result] = json.loads(response.content)["results"]
+    assert result["ok"], result
     [action] = result["actions"]
     assert action["renderer"] == "vue-prepared/1"
-    blocks = [
-        record["html"]
-        for occurrence in action["prepared"]["occurrences"]
-        for record in occurrence["preparedData"].get("opaqueHtml", {}).values()
-    ]
-    # The fill Help wrote, rendered by Django again for this request.
-    assert any('<span class="guide">Read the guide</span>' in block for block in blocks)
-    # `request` is the server event's own request, which render_inputs gives.
-    assert any('<i class="path">/citry/ext/events/' in block for block in blocks)
+    return action
 
 
-def panel_configuration(html: str) -> dict:
-    """The configuration of the island that holds the panel."""
+def app_configuration(html: str, class_prefix: str) -> dict:
+    """The configuration of the island that holds a component of that class."""
     for match in re.finditer(r'<script type="application/json"[^>]*>(.*?)</script>', html, re.S):
-        configuration = json.loads(match.group(1))
-        if "Panel_" in match.group(1):
-            return configuration
+        if class_prefix in match.group(1):
+            return json.loads(match.group(1))
     raise AssertionError(html)
 
 
@@ -348,3 +456,21 @@ def test_a_refusal_says_how_to_change_the_django_template(render_django, source,
     # Citry's own message, with the HTML it refused, stays attached.
     assert caught.value.__cause__ is not None
     assert isinstance(caught.value, ValueError)
+
+
+def test_a_preview_of_the_html_cannot_pick_another_explanation():
+    """Citry's message ends with the refused HTML, which may hold a visitor's
+    text, so only its start decides the explanation."""
+    origin = (
+        "HTML that Citry did not compile (such as the output of a template whose {% %} tags "
+        "Django renders)"
+    )
+    error = ValueError(
+        f"{origin} is not a complete HTML fragment: '<div>{origin} holds a <script> element'"
+    )
+
+    explained = refused_content(error)
+
+    assert explained is not None
+    assert "is not complete" in str(explained)
+    assert refused_content(ValueError(f"Something else. {origin} holds a <script> element")) is None

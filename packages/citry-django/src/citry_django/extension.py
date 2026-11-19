@@ -9,7 +9,9 @@ from django.template.base import TokenType
 
 from .context import CONTEXT_BEHAVIORS, ContextBehavior
 from .engine import django_lexer, get_django_engine
+from .events import remember_page_nonce
 from .expressions import is_django_expression
+from .islands import ensure_csrf_cookie, settle_root
 from .registry import get_tokenizer
 from .spans import PROVIDER, BodyCompiler, TemplateScan
 
@@ -49,6 +51,21 @@ class CitryDjangoExtension(Extension):
             msg = f"context_behavior must be one of {allowed}; got {context_behavior!r}"
             raise ValueError(msg)
         self.context_behavior = context_behavior
+
+    def on_component_rendered(self, ctx: Any) -> None:
+        """Decide the islands in a root component's Django blocks, once it has rendered.
+
+        Inside a `<c-*>` region the region decides. A component rendered
+        straight from Python, or by a server event, has no region, so its
+        root component's render plays that part.
+        """
+        if ctx.error is not None or ctx.component.parent is not None:
+            return
+        options = settle_root(ctx.component, ctx.render)
+        if options is not None:
+            # What a region does for the islands it holds.
+            ensure_csrf_cookie(options.request)
+            remember_page_nonce(ctx.citry, options.request, options.csp_nonce)
 
     def on_template_foreign_spans(self, ctx: Any) -> ForeignSpanSet | None:
         """

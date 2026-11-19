@@ -12,7 +12,7 @@ import pytest
 from django.core.cache import cache
 
 from citry_django.content import IslandContentError
-from citry_django.islands import IslandPlacementError, IslandSlotError, IslandStrategyError
+from citry_django.islands import IslandPlacementError, IslandStrategyError
 from islands import islands
 
 
@@ -177,17 +177,71 @@ def test_slot_content_from_outside_inside_a_django_element_asks_to_migrate(
     assert "write the element, and any Django tag around" in str(caught.value)
 
 
-@pytest.mark.usefixtures("live_slot")
-def test_rendered_from_python_slot_content_from_outside_asks_to_migrate(component):
-    """Without a region there is nothing to make one app of, so the child has
-    to be its own app, which it cannot be."""
+def test_rendered_from_python_a_loop_still_gives_one_island_per_row(component):
+    """Without a region the root component decides, as a region would."""
+    loop = loop_component(component)
+
+    html = str(loop(labels=["a", "b"]))
+
+    assert len(islands(html)) == 2
+
+
+def loop_component(component):
+    return component(
+        """
+        <ul>
+          {% for label in labels %}
+            <li><c-seg-live c-label="label"/></li>
+          {% endfor %}
+        </ul>
+        """,
+        name="seg-loop-direct",
+        Kwargs=type("Kwargs", (), {"__annotations__": {"labels": list}}),
+        template_data=lambda self, kwargs, slots: {"labels": kwargs.labels},
+    )
+
+
+def test_rendered_from_python_inside_a_vue_component_a_block_joins_its_app(component):
+    """The root needs Vue itself, so it is the one app, and no island is
+    built inside it."""
     outer = component(
-        "<div>{% if show %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}</div>",
+        '{% if True %}<c-seg-live label="in"/>{% endif %}',
+        name="seg-live-around-direct",
+        js_data=lambda self, kwargs, slots: {"outer": True},
+    )
+
+    html = str(outer())
+
+    assert len(islands(html)) == 1
+    assert len(islands(html).configs) == 1
+
+
+@pytest.mark.usefixtures("live_slot")
+def test_rendered_from_python_slot_content_from_outside_makes_one_app(component):
+    outer = component(
+        "{% if show %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}",
         name="seg-slot-direct",
         Kwargs=type("Kwargs", (), {"__annotations__": {"show": bool}}),
         template_data=lambda self, kwargs, slots: {"show": kwargs.show},
     )
 
-    with pytest.raises(IslandSlotError, match="Migrate that part to Citry") as caught:
-        str(outer(show=True))
-    assert isinstance(caught.value, TypeError)
+    html = str(outer(show=True))
+
+    assert len(islands(html)) == 1
+    assert "from outside" in html
+
+
+@pytest.mark.usefixtures("live_slot")
+def test_the_refusal_names_the_component_that_made_the_region_one_app(component, render_django):
+    """The live component inside the <div> could be an island on its own; its
+    sibling with slot content from outside is what made the region one app."""
+    component(
+        "<div>{% if True %}<c-seg-live label='a'/>{% endif %}</div>"
+        "{% if True %}<c-seg-live-slot>from outside</c-seg-live-slot>{% endif %}",
+        name="seg-slot-sibling",
+    )
+
+    with pytest.raises(IslandContentError) as caught:
+        render_django("<c-seg-slot-sibling/>")
+    assert "The whole region is one Vue app here:" in str(caught.value)
+    assert "holds content that the component around it passed in" in str(caught.value)
