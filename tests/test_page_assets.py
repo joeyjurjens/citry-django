@@ -8,6 +8,9 @@ and component tag, keeps every island tag, and only the component tags reach
 
 from __future__ import annotations
 
+import json
+import re
+
 import pytest
 from citry import Citry, Component, Extension
 from citry.ext.dependencies import Script
@@ -142,3 +145,62 @@ def test_a_spot_next_to_a_component_is_not_part_of_its_region(recorded, render_d
     html = render_django("<body><p>first</p><c-pa-still/><c-css/></body>")
 
     assert html.index("<s") < html.index(".still{")
+
+
+@pytest.fixture
+def i18n_regions(monkeypatch, settings):
+    """Two components that translate in the browser, on an engine with i18n."""
+    import testproject.citry_app as app_module
+
+    app = Citry(
+        extensions=[CitryDjangoExtension()],
+        extensions_defaults={"i18n": {"source_locale": "en", "locales": ["en", "de"]}},
+        secret="page-assets-i18n-" * 3,
+    )
+    app.set_mounted_prefix("/citry")
+
+    class First(Component):
+        citry = app
+        template = """
+            <c-i18n c-client="True" tag="main">
+              <output v-text="$i18n.tr('title')">x</output>
+            </c-i18n>
+        """
+        messages = """
+            title = First
+        """
+
+    class Second(Component):
+        citry = app
+        template = """
+            <c-i18n c-client="True" tag="main">
+              <output v-text="$i18n.tr('other')">x</output>
+            </c-i18n>
+        """
+        messages = """
+            other = Second
+        """
+
+    app.register(First, "pa-i18n-first")
+    app.register(Second, "pa-i18n-second")
+    monkeypatch.setattr(app_module, "page_assets_i18n_app", app, raising=False)
+    settings.CITRY_APP = "testproject.citry_app:page_assets_i18n_app"
+    citry_app_source.cache_clear()
+    yield
+    citry_app_source.cache_clear()
+
+
+@pytest.mark.usefixtures("i18n_regions")
+def test_two_regions_with_i18n_share_one_i18n_runtime(render_django):
+    """Each island carries its own messages in its configuration block, and
+    the i18n runtime they share is written once."""
+    html = render_django(
+        "<head><c-css/></head><body><c-pa-i18n-first/><p>x</p><c-pa-i18n-second/><c-js/></body>"
+    )
+    found = islands(html)
+
+    assert len(found) == 2
+    assert len(re.findall(r'<script\b[^>]*src="/citry/ext/i18n/runtime\.', html)) == 1
+    # No page-wide i18n block that two islands would have to share.
+    assert "data-citry-i18n" not in html
+    assert all('"i18n"' in json.dumps(config) for config in found.configs)

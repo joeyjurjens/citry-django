@@ -440,6 +440,10 @@ The page sorts the tags into three groups:
 In a spot, the runtime tags come first, then the component tags, then the
 island tags.
 
+Islands that translate in the browser work the same way: each island
+carries its own messages in its configuration block, and the i18n runtime
+they share is written once.
+
 Nothing in the markup refers back to the page that produced it, so a region's
 HTML stands on its own. `{% cache %}` around one works. So does a rendered
 fragment you stored and send back later, and a base template you kept in a
