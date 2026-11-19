@@ -120,11 +120,10 @@ class _BlockState:
         The text around a segment is Django's, so the enclosing component can
         only be serialized as plain HTML, and a component that needs Vue cannot
         join it. Each such component is serialized on its own instead, where it
-        stands, and its finished HTML takes its place. Its assets are written
-        beside it, the way Citry places them for output that is not a whole
-        page. Components that
-        need no Vue stay live, so the enclosing serializer still collects
-        their assets once for the whole page.
+        stands, and its finished HTML takes its place, with its asset tags
+        between citry-django's comments for the page to collect (see
+        `page.placed`). Components that need no Vue stay live, so the
+        enclosing serializer still collects their assets with the rest.
 
         Runs after the marker checks above, so a tag that changed, repeated or
         dropped a marker still fails before any island is built.
