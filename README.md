@@ -263,8 +263,9 @@ gives one island per row, and the `<ul>` and `<li>` stay plain HTML. A Django
 each iteration's component is the root of its own app. A Citry `<c-for>` that
 repeats an interactive component inside one island still needs `#c-key`.
 
-Each island links Citry's browser runtime and its own assets beside itself,
-so a page with several islands loads the runtime more than once. The browser
+Each island links or inlines Citry's browser runtime and its own assets
+beside itself, so a page with several islands carries the runtime more than
+once. The browser
 runs it once. An island can update only the components inside it: a server
 event in one row cannot re-render another row. Put components that work
 together in one Citry component, so they share an island.

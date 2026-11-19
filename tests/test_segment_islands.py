@@ -46,6 +46,12 @@ def fixtures(component):
         "<p>{% if show %}<c-seg-live label='in p'/>{% endif %}</p>",
         name="seg-in-p",
     )
+    component(
+        "<section class='inner'>{% if show %}<c-seg-live label='deep'/>{% endif %}</section>",
+        name="seg-inner",
+        css=".inner{color:green}",
+    )
+    component("<div>{% if show %}<c-seg-inner c-show='show'/>{% endif %}</div>", name="seg-outer")
 
 
 def test_each_iteration_is_its_own_island(render_django):
@@ -114,3 +120,15 @@ def test_an_island_without_its_scripts_is_refused(render_django, settings, strat
 def test_an_island_inside_a_components_p_is_refused(render_django):
     with pytest.raises(IslandPlacementError, match="inside <p>"):
         render_django("<c-seg-in-p c-show='True'/>")
+
+
+def test_a_static_component_holding_an_island_stays_static(render_django):
+    """Only the component that needs Vue becomes an island, at any depth, so
+    the static component around it keeps its assets with the page."""
+    html = render_django("<c-seg-outer c-show='True'/>")
+    found = islands(html)
+
+    assert len(found) == 1
+    assert html.count(".inner{color:green}") == 1
+    # The inner section is outside the island: Vue owns only the button.
+    assert html.index("class='inner'") < html.index('id="citry-vue-')

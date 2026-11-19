@@ -120,7 +120,8 @@ class _BlockState:
         only be serialized as plain HTML, and a component that needs Vue cannot
         join it. Each such component is serialized on its own instead, where it
         stands, and its finished HTML takes its place. Its assets are written
-        beside it, the way Citry places them for a fragment. Components that
+        beside it, the way Citry places them for output that is not a whole
+        page. Components that
         need no Vue stay live, so the enclosing serializer still collects
         their assets once for the whole page.
 

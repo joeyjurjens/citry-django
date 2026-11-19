@@ -21,6 +21,7 @@ from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from typing import Any
 
+from citry import CitryRender
 from django.core.exceptions import ImproperlyConfigured
 from django.utils.html import escape
 
@@ -125,7 +126,29 @@ def request_csp_nonce(request: Any) -> str | None:
     return None if nonce is None else str(nonce)
 
 
-def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
+class IslandHtml(str):
+    """A finished island's HTML, standing in a render's parts.
+
+    A plain `str` to Citry. The type lets a Django block further out see that
+    a component already holds finished islands, so it does not turn that
+    whole component into an island again.
+    """
+
+    __slots__ = ()
+
+
+def finished_islands(render: Any) -> set[str]:
+    """The app ids of the finished islands anywhere inside `render`."""
+    found: set[str] = set()
+    for part in render.parts:
+        if isinstance(part, IslandHtml):
+            found |= island_ids(part)
+        elif isinstance(part, CitryRender):
+            found |= finished_islands(part)
+    return found
+
+
+def serialize_island(render: Any, *, csp_nonce: str | None) -> IslandHtml | None:
     """`render` serialized as its own island, or None when it needs no Vue.
 
     Used for a component inside a Django block, which has to stand on its own
@@ -140,10 +163,14 @@ def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
         deps_strategy=strategy if strategy in ISLAND_STRATEGIES else "document",
         csp_nonce=csp_nonce,
     )
-    if not has_island(html):
+    # Islands an inner Django block already finished are copied into this
+    # output as they stand. Only an app this serialize created makes the
+    # component an island; otherwise it stays live, and its own assets are
+    # collected with the page.
+    if not island_ids(html) - finished_islands(render):
         return None
     refuse_strategy(strategy)
-    return html
+    return IslandHtml(html)
 
 
 def serialize_region(render: Any, *, csp_nonce: str | None) -> tuple[str, bool]:
