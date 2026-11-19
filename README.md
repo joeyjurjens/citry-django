@@ -887,6 +887,34 @@ The browser reads Django's default names only. With `CSRF_USE_SESSIONS`,
 `CSRF_COOKIE_HTTPONLY`, or a custom `CSRF_COOKIE_NAME` or `CSRF_HEADER_NAME`,
 server events fail Django's CSRF check.
 
+### HTML a server event sends back needs the page's CSP nonce
+
+Under a nonce-based Content Security Policy, a region passes the request's
+nonce to Citry, so every island on the page carries it. The nonce is read
+from the template context (`csp_nonce` or `CSP_NONCE`), from django-csp's
+`request.csp_nonce`, or from Django's own CSP middleware.
+
+Citry's browser runtime applies a server event's update to the app already
+on the page and needs nothing more. A handler that answers with HTML Citry
+serializes, for example to an htmx swap or a form posted to the handler's own
+URL, needs the nonce of the page that sent the call, which the event request
+does not have. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events setting:
+
+```python
+from citry_django import CitryDjangoExtension, page_csp_nonce
+
+app = Citry(
+    extensions=[CitryDjangoExtension()],
+    extensions_defaults={"events": {"_csp_nonce": page_csp_nonce}},
+)
+```
+
+With it set, citry-django keeps the nonce in the session when it renders a
+page that holds a component that needs Vue, and `page_csp_nonce` gives it
+back. It needs Django's session middleware. The session keeps the nonce of
+the last such page a visitor loaded, so HTML for a page in an older tab
+carries the wrong nonce, and the browser refuses to start it.
+
 ### Injection safety
 
 Citry-rendered output is never spliced into Django template *source*, so a

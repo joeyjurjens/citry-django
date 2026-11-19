@@ -10,6 +10,7 @@ from django.utils.safestring import mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
 from .engine import get_django_engine
+from .events import remember_page_nonce
 from .i18n import LOCALE_PROVIDE, locale_context
 from .islands import (
     ISLANDS_PROVIDE,
@@ -203,8 +204,10 @@ class CitryFragment(template.Node):
         html, island = serialize_region(rendered, csp_nonce=nonce)
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
         if island:
-            # An island may hold Events, whose calls need the CSRF cookie.
+            # An island may hold Events, whose calls need the CSRF cookie and,
+            # for HTML a call answers with, this page's nonce.
             ensure_csrf_cookie(request)
+            remember_page_nonce(app, request, nonce)
         return mark_safe(html)
 
     def __repr__(self) -> str:

@@ -19,6 +19,7 @@ from django.utils.html import escape
 from django.utils.safestring import mark_safe
 
 from .engine import explain_tokenizer_disagreement, get_django_engine
+from .events import remember_page_nonce
 from .expressions import is_dotted_path
 from .islands import ensure_csrf_cookie, island_options, serialize_island
 from .nodes import CitryParser, CitrySegment
@@ -133,6 +134,9 @@ class _BlockState:
             if island is None:
                 return rendered
             ensure_csrf_cookie(self.options.request)
+            # A component root always has its component on the context.
+            app = rendered.context.component.citry
+            remember_page_nonce(app, self.options.request, self.options.csp_nonce)
             return island
         # A `<c-if>` branch, a `<c-for>` body or a fill: not a component of its
         # own, so look inside it. These renders belong to this block alone,
