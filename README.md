@@ -783,15 +783,10 @@ Forever is safe because the mount carries a release segment:
 prefix is in every URL Citry builds. Citry names its own routes, and
 `citry.js` is `citry.js` at every version, so without this a browser told to
 keep one forever would keep the wrong one after an upgrade. The segment is
-derived from the installed Citry version and from
-[`CITRY_MINIFY_ASSETS`](#citry_minify_assets), which are the two things that
-change the bytes.
+derived from the installed Citry version, which is what changes the bytes.
 
 That is also why there is no setting for how long: the URL says which bytes it
 serves, so the answer is always forever.
-
-Those files ship unminified and staticfiles cannot see them, so this mount is
-the only place able to shrink them.
 
 ## Settings
 
@@ -803,7 +798,6 @@ needs to say otherwise.
 | [`CITRY_APP`](#citry_app) | *required* |
 | [`CITRY_DEPS_STRATEGY`](#citry_deps_strategy) | `"document"` |
 | [`CITRY_COLLECT_PAGE_ASSETS`](#citry_collect_page_assets) | `True` |
-| [`CITRY_MINIFY_ASSETS`](#citry_minify_assets) | `False` |
 | [`CITRY_COMPRESSOR_FILE_TYPES`](#citry_compressor_file_types) | `{}` |
 
 #### `CITRY_APP`
@@ -843,12 +837,10 @@ does the collecting.
 
 #### `CITRY_MINIFY_ASSETS`
 
-Whether Citry's own runtime is minified on its way out of
-[the mount](#citrys-own-routes). Citry ships it unminified and staticfiles
-cannot see it, so this is the only place able to shrink it. Needs
-django-compressor, and is off because it costs the minifier's time on every
-cold cache. Turning it on changes the release segment, so browsers pick the
-new file up on their own.
+Removed in citry-django 0.4.0. Citry pins each file it serves with an
+`integrity` hash of its bytes, so a browser refuses a minified copy. With the
+setting on, loading [the mount](#citrys-own-routes) raises
+`ImproperlyConfigured`; delete the setting. Set to `False` it is ignored.
 
 #### `CITRY_COMPRESSOR_FILE_TYPES`
 

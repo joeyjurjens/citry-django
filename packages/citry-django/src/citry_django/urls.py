@@ -8,6 +8,7 @@ from typing import Any
 
 from citry.contrib.django import urlpatterns as citry_urlpatterns
 from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
 from django.urls import include, path
 
 #: A year, which is as long as `Cache-Control` is allowed to promise.
@@ -16,6 +17,14 @@ FOREVER = 31536000
 #: One compressed body per URL. The release segment is in that URL, so an
 #: upgrade is a different key rather than a stale value.
 packed: dict[str, bytes] = {}
+
+#: What a project that still turns on `CITRY_MINIFY_ASSETS` is told.
+MINIFY_REMOVED = (
+    "CITRY_MINIFY_ASSETS was removed in citry-django 0.4.0. Citry pins each "
+    "file it serves with an integrity hash of its bytes, so the browser "
+    "refuses a minified copy and the page loses Citry's runtime. Remove the "
+    "setting; the mount still gzips each file for a client that asks."
+)
 
 
 def urlpatterns(app: Any, prefix: str) -> list[Any]:
@@ -33,11 +42,18 @@ def urlpatterns(app: Any, prefix: str) -> list[Any]:
             ...
         ]
 
-    `CITRY_MINIFY_ASSETS` runs the JavaScript through django-compressor's
-    minifier on the way out, and a response is gzipped once for a client that
-    asks for it. Citry ships the runtime unminified, and it is not a file
-    staticfiles can see, so this is the one place able to shrink it.
+    A response is gzipped once for a client that asks for it.
+
+    Raises:
+        ImproperlyConfigured: `CITRY_MINIFY_ASSETS` is on. Citry pins each
+            file it serves with an `integrity` hash of its bytes, so a
+            browser refuses a minified copy and the page loses its runtime.
     """
+    # Checked here because the mount is the only place the setting ever
+    # applied, and URL loading runs at startup, so the project fails before
+    # it serves a page whose runtime the browser would refuse.
+    if getattr(settings, "CITRY_MINIFY_ASSETS", False):
+        raise ImproperlyConfigured(MINIFY_REMOVED)
     token = release()
     mounted = citry_urlpatterns(app, f"{prefix.rstrip('/')}/{token}")
     return [path(f"{token}/", include([served(pattern) for pattern in mounted]))]
@@ -53,11 +69,9 @@ def release() -> str:
     an upgrade then reaches a browser as a different file rather than as a
     revalidation it may skip.
 
-    What can change those bytes is the version of Citry that ships them and
-    whether this module minifies on the way out.
+    What can change those bytes is the version of Citry that ships them.
     """
-    minified = bool(getattr(settings, "CITRY_MINIFY_ASSETS", False))
-    digest = hashlib.sha256(f"{installed('citry')}:{minified}".encode())
+    digest = hashlib.sha256(installed("citry").encode())
     return digest.hexdigest()[:8]
 
 
@@ -81,7 +95,7 @@ def served(pattern: Any) -> Any:
 
 
 def prepared(request: Any, response: Any) -> Any:
-    """`response` as it should leave: minified, compressed, kept forever.
+    """`response` as it should leave: compressed and kept forever.
 
     A web server compresses and caches the files it serves, and these are not
     files it serves: they come from a Django view, so a rule that names a
@@ -95,8 +109,6 @@ def prepared(request: Any, response: Any) -> Any:
     """
     if response.status_code != 200 or not is_file(request):
         return response
-    if is_javascript(response) and getattr(settings, "CITRY_MINIFY_ASSETS", False):
-        response.content = minified(response.content)
     if accepts_gzip(request) and "Content-Encoding" not in response:
         response.content = compressed(request.path, response.content)
         response["Content-Encoding"] = "gzip"
@@ -132,20 +144,3 @@ def compressed(url: str, content: bytes) -> bytes:
 
 def accepts_gzip(request: Any) -> bool:
     return "gzip" in request.META.get("HTTP_ACCEPT_ENCODING", "")
-
-
-def is_javascript(response: Any) -> bool:
-    return "javascript" in response.get("Content-Type", "")
-
-
-def minified(content: bytes) -> bytes:
-    """`content` through django-compressor's minifier, or unchanged without it.
-
-    The dependency is the compressor package's, not this one's, so a project
-    that does not install it keeps the bundle it had rather than an error.
-    """
-    try:
-        from compressor.filters.jsmin import rJSMinFilter
-    except ImportError:
-        return content
-    return rJSMinFilter(content.decode()).output().encode()

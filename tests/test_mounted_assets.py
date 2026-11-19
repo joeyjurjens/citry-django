@@ -1,5 +1,6 @@
 import pytest
 from citry import Citry, Component
+from django.core.exceptions import ImproperlyConfigured
 from django.test import RequestFactory
 
 from citry_django import CitryDjangoExtension
@@ -45,12 +46,22 @@ class TestMounting:
         assert segment and "/" not in segment
         assert segment == release()
 
-    def test_minifying_changes_the_release(self, settings):
-        """It changes the bytes at the same route, so it has to change the URL."""
-        plain = release()
+    def test_minifying_is_refused(self, settings):
+        """Citry pins each file with an `integrity` hash, so a browser would
+        refuse a minified runtime. Failing at URL loading stops the project
+        before it serves such a page."""
         settings.CITRY_MINIFY_ASSETS = True
+        app = Citry(autodiscover=False, extensions=[CitryDjangoExtension()])
 
-        assert release() != plain
+        with pytest.raises(ImproperlyConfigured, match="CITRY_MINIFY_ASSETS was removed"):
+            urlpatterns(app, "/citry")
+        assert app.mounted_prefix is None
+
+    def test_minifying_turned_off_is_harmless(self, settings):
+        settings.CITRY_MINIFY_ASSETS = False
+        app = Citry(autodiscover=False, extensions=[CitryDjangoExtension()])
+
+        assert urlpatterns(app, "/citry")
 
     @URL_CLEANUP
     def test_the_runtime_is_served_as_a_file(self, mounted):
@@ -100,21 +111,6 @@ class TestServing:
 
         assert view(request).content == first
         assert dict(packed) == keys
-
-    def test_minification_is_off_by_default(self, mounted):
-        _, patterns = mounted
-        response = runtime_view(patterns).callback(RequestFactory().get("/citry/citry.js"))
-        assert b"\n" in response.content
-
-    def test_minification_shrinks_the_runtime(self, mounted, settings):
-        """Citry ships it unminified, and it is not a file staticfiles can see,
-        so this is the one place able to shrink it."""
-        _, patterns = mounted
-        view = runtime_view(patterns).callback
-        before = len(view(RequestFactory().get("/citry/citry.js")).content)
-        settings.CITRY_MINIFY_ASSETS = True
-        after = len(view(RequestFactory().get("/citry/citry.js")).content)
-        assert after < before
 
     def test_a_response_is_gzipped_for_a_client_that_asks(self, mounted):
         """These come from a view, so a web server rule naming a static
