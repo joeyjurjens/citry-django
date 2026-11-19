@@ -20,6 +20,7 @@ from django.utils.safestring import mark_safe
 
 from .engine import explain_tokenizer_disagreement, get_django_engine
 from .expressions import is_dotted_path
+from .islands import island_options, serialize_island
 from .nodes import CitryParser, CitrySegment
 from .registry import get_tokenizer
 
@@ -41,7 +42,7 @@ class _BlockState:
     builds its own, and template code cannot reach it.
     """
 
-    __slots__ = ("citry_context", "mode", "node", "nonce", "renders", "sink")
+    __slots__ = ("citry_context", "mode", "node", "nonce", "options", "renders", "sink")
 
     def __init__(
         self,
@@ -57,6 +58,9 @@ class _BlockState:
         self.renders: list[CitryRender] = []
         self.mode = mode
         self.sink = sink
+        # How islands inside this block are built: the same as the region
+        # around it, so every app on the page carries the same nonce.
+        self.options = island_options(citry_context)
 
     def retain(self, rendered: CitryRender) -> str:
         """Retain one live render and return its exact marker for Django."""
@@ -103,11 +107,37 @@ class _BlockState:
             if was_escaped:
                 parts.append(str(escape(rendered.serialize(deps_strategy="ignore"))))
             else:
-                parts.append(rendered)
+                parts.append(self.with_islands(rendered))
             cursor = end
         if cursor < len(html):
             parts.append(html[cursor:])
         return CitryRender(parts=parts, context=self.citry_context)
+
+    def with_islands(self, rendered: CitryRender) -> Any:
+        """`rendered`, with each component inside it that needs Vue as its own island.
+
+        The text around a segment is Django's, so the enclosing component can
+        only be serialized as plain HTML, and a component that needs Vue cannot
+        join it. Each such component is serialized on its own instead, where it
+        stands, and its finished HTML takes its place. Its assets are written
+        beside it, the way Citry places them for a fragment. Components that
+        need no Vue stay live, so the enclosing serializer still collects
+        their assets once for the whole page.
+
+        Runs after the marker checks above, so a tag that changed, repeated or
+        dropped a marker still fails before any island is built.
+        """
+        if rendered.is_component_root:
+            island = serialize_island(rendered, csp_nonce=self.options.csp_nonce)
+            return rendered if island is None else island
+        # A `<c-if>` branch, a `<c-for>` body or a fill: not a component of its
+        # own, so look inside it. These renders belong to this block alone,
+        # which makes replacing their parts in place safe.
+        rendered.parts = [
+            self.with_islands(part) if isinstance(part, CitryRender) else part
+            for part in rendered.parts
+        ]
+        return rendered
 
     def reject_stale_markers(self, html: str) -> None:
         """

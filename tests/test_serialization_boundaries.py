@@ -18,8 +18,14 @@ def json_script(html: str, attribute: str) -> dict:
     return json.loads(match.group(1))
 
 
-@pytest.mark.xfail(strict=True, reason="step 3: islands for Django blocks inside components")
-def test_django_loop_preserves_client_graph_and_serializes_once() -> None:
+def test_django_loop_makes_one_island_per_iteration() -> None:
+    """A Django `{% for %}` inside a component repeats an interactive child.
+
+    The text around the loop is Django's, so each child that needs Vue
+    becomes its own island where it stands, with no `#c-key`, and the page
+    around them stays plain HTML.
+    """
+
     class CountSerialize(Extension):
         name = "count_serialization_boundary"
 
@@ -58,24 +64,31 @@ def test_django_loop_preserves_client_graph_and_serializes_once() -> None:
         citry = app
         template = """
             <html><head><c-css/></head><body>
+              <ul>
               {% for value in values %}
-                <c-serialization-boundary-widget c-value="value"/>
+                <li><c-serialization-boundary-widget c-value="value"/></li>
               {% endfor %}
+              </ul>
               <c-js/>
             </body></html>
         """
 
     html = str(Page(values=["a", "b"]))
-    graph = json_script(html, "data-citry-graph")
-    events = json_script(html, "data-citry-events")
+    found = islands(html)
 
-    assert counter.calls == ["document"]
+    # One serialize per island, then one for the page around them.
+    assert counter.calls == ["document", "document", "document"]
+    assert len(found) == 2
+    assert len(found.configs) == 2
+    assert len(found.starts) == 2
+    assert len(set(found.hosts)) == 2
     assert html.count('class="boundary-widget"') == 2
-    assert html.count('data-citry-root=""') == 2
-    assert html.count(".boundary-widget{color:red}") == 1
-    assert html.count('console.log("boundary-widget")') == 1
-    assert events["clientGraphRevision"] == graph["revision"]
-    assert len(events["componentInstances"]) == 2
+    # Each host sits in its own row, where the loop put the widget.
+    assert len(re.findall(r'<li>\s*(?:<[^>]+>\s*)*?<div id="citry-vue-', html)) == 2
+    # Each island links its own assets beside itself until Citry can hand
+    # them back for the page to collect.
+    assert html.count('rel="stylesheet"') == 2
+    assert html.split("<body>")[0].count("<link") == 0
 
 
 @NEEDS_C1

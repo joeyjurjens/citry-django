@@ -10,7 +10,13 @@ from django.utils.safestring import mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
 from .engine import get_django_engine
-from .islands import refuse_misplaced_islands, serialize_region
+from .islands import (
+    ISLANDS_PROVIDE,
+    IslandOptions,
+    refuse_misplaced_islands,
+    request_csp_nonce,
+    serialize_region,
+)
 from .page import prepared
 from .registry import context_behavior, get_citry_app
 
@@ -173,14 +179,20 @@ class CitryFragment(template.Node):
         # `inject(HOST_PROVIDE)`. An extension that has to reach host state -- an
         # asset collector, say -- needs it in nested components too, where the
         # inputs above no longer reach.
+        nonce = self.csp_nonce(context, request)
+        provides = {
+            HOST_PROVIDE: variables,
+            # Islands built inside a component's Django blocks read this.
+            ISLANDS_PROVIDE: IslandOptions(csp_nonce=nonce),
+        }
         rendered = get_citry_app().render_template(
             prepared(self.source),
             variables,
             template_globals=globals_ or None,
-            provides={HOST_PROVIDE: variables},
+            provides=provides,
             origin=self.citry_origin,
         )
-        html, _island = serialize_region(rendered, csp_nonce=self.csp_nonce(context, request))
+        html, _island = serialize_region(rendered, csp_nonce=nonce)
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
         return mark_safe(html)
 
@@ -210,5 +222,4 @@ class CitryFragment(template.Node):
         for candidate in (context.get("csp_nonce"), context.get("CSP_NONCE")):
             if candidate is not None:
                 return str(candidate)
-        nonce = getattr(request, "csp_nonce", None) if request is not None else None
-        return None if nonce is None else str(nonce)
+        return request_csp_nonce(request)

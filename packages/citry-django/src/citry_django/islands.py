@@ -26,6 +26,11 @@ from django.utils.html import escape
 
 from .registry import deps_strategy
 
+try:
+    from django.middleware.csp import get_nonce
+except ImportError:  # Django 5.2 has no CSP middleware of its own.
+    get_nonce = None
+
 # TODO(C2): once Citry has a public check of whether a render needs its
 # browser runtime, ask it and delete this pattern. Until then the mount
 # element is the only public sign of an island: the
@@ -38,6 +43,11 @@ VUE_HOST = re.compile(r'<div id="citry-vue-[0-9a-f]+"')
 ISLAND_STRATEGIES = frozenset({"document", "fragment"})
 
 
+#: The provide key a region passes its island options down under. Read only by
+#: `foreign.py`, so components never need to know it.
+ISLANDS_PROVIDE = "citry_django_islands"
+
+
 class IslandStrategyError(ImproperlyConfigured):
     """An island would be written without the scripts that make it work."""
 
@@ -46,9 +56,70 @@ class IslandPlacementError(ValueError):
     """An island would stand where the browser moves or drops its element."""
 
 
+@dataclass(frozen=True)
+class IslandOptions:
+    """What a region knows that the islands inside its components need.
+
+    A component's template has no Django context, so a region hands these
+    down through a provide. Each island inside the region is then built
+    with the same CSP nonce as the region itself, which the browser runtime
+    requires of every app on one page.
+    """
+
+    csp_nonce: str | None
+
+
 def has_island(html: str) -> bool:
     """Whether serialized output holds a Vue app."""
     return VUE_HOST.search(html) is not None
+
+
+def island_options(citry_context: Any) -> IslandOptions:
+    """The options the enclosing region provided, or what the render itself knows.
+
+    A component rendered directly, outside any Django template, has no region
+    above it. Its request, when a caller passed one as a render global, still
+    names the nonce.
+    """
+    provided = citry_context.provides.get(ISLANDS_PROVIDE)
+    if isinstance(provided, IslandOptions):
+        return provided
+    return IslandOptions(csp_nonce=request_csp_nonce(citry_context.variables.get("request")))
+
+
+def request_csp_nonce(request: Any) -> str | None:
+    """The CSP nonce a CSP package put on the request, if any did.
+
+    django-csp sets `request.csp_nonce`. Django's own CSP middleware (6.0 and
+    later) keeps it where `django.middleware.csp.get_nonce` reads it.
+    """
+    if request is None:
+        return None
+    nonce = getattr(request, "csp_nonce", None)
+    if nonce is None and get_nonce is not None:
+        nonce = get_nonce(request)
+    return None if nonce is None else str(nonce)
+
+
+def serialize_island(render: Any, *, csp_nonce: str | None) -> str | None:
+    """`render` serialized as its own island, or None when it needs no Vue.
+
+    Used for a component inside a Django block, which has to stand on its own
+    because the HTML around it is Django's. A component that needs no Vue is
+    left to the enclosing serializer, which collects its assets with the rest
+    of the page, so the serialize done here to find out is discarded.
+    """
+    strategy = deps_strategy()
+    # Under "simple" or "ignore" Citry writes no host at all, so the only way
+    # to see that the render needed one is to ask for the scripts.
+    html = render.serialize(
+        deps_strategy=strategy if strategy in ISLAND_STRATEGIES else "document",
+        csp_nonce=csp_nonce,
+    )
+    if not has_island(html):
+        return None
+    refuse_strategy(strategy)
+    return html
 
 
 def serialize_region(render: Any, *, csp_nonce: str | None) -> tuple[str, bool]:

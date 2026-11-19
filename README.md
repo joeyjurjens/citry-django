@@ -244,6 +244,31 @@ Django evaluates the block and only asks for the branch it takes, so:
 Nesting works in either direction: `{% if %}` inside `<c-for>`, `<c-for>`
 inside `{% if %}`.
 
+#### Components that need Vue inside a Django block
+
+A component that needs Vue (one with `js_data()`, `Events`, Vue bindings or
+its own `js`) runs as its own Vue app, an *island*. Inside a Django block of a
+component's template, each such component becomes an island where it stands:
+
+```html
+<ul>
+  {% for item in items %}
+    <li><c-like-button c-item="item"/></li>
+  {% endfor %}
+</ul>
+```
+
+gives one island per row, and the `<ul>` and `<li>` stay plain HTML. A Django
+`{% for %}` needs no `#c-key`, in a component or in a Django template, because
+each iteration's component is the root of its own app. A Citry `<c-for>` that
+repeats an interactive component inside one island still needs `#c-key`.
+
+Each island links Citry's browser runtime and its own assets beside itself,
+so a page with several islands loads the runtime more than once. The browser
+runs it once. An island can update only the components inside it: a server
+event in one row cannot re-render another row. Put components that work
+together in one Citry component, so they share an island.
+
 ## Writing an input
 
 ### `c-x` is Python, a plain attribute is Django
