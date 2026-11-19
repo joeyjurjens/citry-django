@@ -136,7 +136,7 @@ class TestJavaScriptCallbacks:
     """Tests that $component() callbacks and js_data() survive compression."""
 
     @pytest.mark.usefixtures("compressor_enabled")
-    def test_component_callback_survives_compression(self, render_page):
+    def test_island_code_is_left_out_of_compression(self, render_page):
         """A component with its own `js` is a Vue island, and its code stays
         with the island: Citry's runtime checks those tags, so the compressor
         never touches them."""
@@ -629,3 +629,12 @@ class TestTheConfiguredCompressor:
         assert issubclass(built, NamedCssCompressor)
         assert issubclass(built, GROUPS[Kind.CSS][0])
         assert collecting(Kind.CSS) is built
+
+
+def test_an_empty_attribute_value_is_read_as_empty():
+    from citry_django_compressor import PageTag
+
+    tag = PageTag.read('<link rel="stylesheet" href="" media>')
+
+    assert tag.attrs == {"rel": "stylesheet", "href": "", "media": True}
+    assert tag.url is None

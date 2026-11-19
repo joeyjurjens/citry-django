@@ -29,7 +29,7 @@ class Kind(StrEnum):
 
 
 #: One attribute of a tag Citry wrote: a name, and a quoted value or none.
-ATTRIBUTE = re.compile(r"""([^\s=/>"']+)(?:\s*=\s*(?:"([^"]*)"|'([^']*)'))?""")
+ATTRIBUTE = re.compile(r"""([^\s=/>"']+)(\s*=\s*(?:"([^"]*)"|'([^']*)'))?""")
 
 #: A tag the page hands over: its name, its attributes, and any content.
 PAGE_TAG = re.compile(
@@ -64,9 +64,9 @@ class PageTag:
         if match is None:
             return None
         attrs: dict[str, Any] = {}
-        for name, double, single in ATTRIBUTE.findall(match.group("attrs")):
-            value = double if double else single
-            attrs[name.lower()] = html.unescape(value) if (double or single) else True
+        for name, assigned, double, single in ATTRIBUTE.findall(match.group("attrs")):
+            # `href=""` is an empty value, not a bare attribute.
+            attrs[name.lower()] = html.unescape(double or single) if assigned else True
         return cls(markup, match.group("name").lower(), attrs, match.group("content"))
 
     @property
@@ -320,7 +320,13 @@ class CitryCompressorExtension(Extension):
     runtime and each Vue island's own tags never reach it, so the assets of a
     component that needs Vue stay as Citry wrote them.
 
-    ``sort`` decides the order inside that file; see :meth:`bundled`.
+    ``sort`` decides the order inside that file. A compressed file is named
+    after its own bytes, and components arrive in whatever order a page
+    reaches them, so the tags are sorted first: one set of components makes
+    one file wherever they sit. `sort=False` keeps the page's order, for a
+    project whose component stylesheets rely on it. The file takes the
+    position of the first tag it replaced, and every tag it does not take
+    keeps its own place.
     """
 
     name = "compressor"

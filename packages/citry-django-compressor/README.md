@@ -36,7 +36,7 @@ Of the tags it is offered, it takes:
 - a stylesheet link or a script file under `COMPRESS_URL`, unless Citry serves it from its own routes;
 - a component's own `<style>`, and a `<style>` whose `type` you declared in `Dependencies`.
 
-It leaves alone a file somewhere else, such as a CDN, and the `<style>` holding one instance's `css_data()` values, so one page's data never ends up in a shared file.
+It leaves alone a file somewhere else, such as a CDN, and the `<style>` holding one instance's `css_data()` values, so one page's data never ends up in a shared file. It also leaves alone inline `Dependencies` content: a `Script(content=...)`, and a `Style(content=...)` that declares no `type`. In the page these look like any other inline tag, so declare the content as a file, or give a `Style` a `type`, to have it compressed.
 
 Results come from django-compressor's cache where that is allowed, keyed the way the `{% compress %}` tag keys it, on a digest of the content plus the mtimes of its sources. Without that every render recompiles its SCSS from scratch.
 
@@ -79,6 +79,8 @@ CitryCompressorExtension(force=lambda: getattr(get_current_request(), "is_previe
 ```
 
 ## Limitations
+
+Under `CITRY_DEPS_STRATEGY = "fragment"` citry-django does not collect a page's tags, so nothing is compressed.
 
 A component that needs Vue keeps its assets as Citry wrote them, so SCSS or another language that needs a precompiler does not work in its `css`. Compile it ahead of time, or move the styles to a component that needs no Vue.
 
