@@ -387,9 +387,10 @@ class Slider(Component):
 Citry reads both files against its `dirs` and hands the contents to the
 render, so `styles()` and staticfiles are not involved. What you get back is
 what makes this worth reaching for: `css_data()` becomes custom properties
-scoped to this instance's elements, `js_data()` reaches the `$component`
-callback as its `data`, and Citry ships the client runtime because it can see
-that the component asked for one.
+scoped to this instance's elements, `js_data()` values become members of the
+`component` object that the `$component(({ component }) => ...)` callback
+receives, and Citry ships the client runtime because it can see that the
+component asked for one.
 
 The contents arrive as a dependency like any other, so
 [citry-django-compressor](#one-file-for-a-whole-response) compiles and bundles
