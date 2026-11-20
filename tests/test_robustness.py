@@ -1,8 +1,12 @@
 import threading
 
 import pytest
+from django.core.cache import cache
+from django.core.cache.utils import make_template_fragment_key
 from django.template import engines
 from django.utils.safestring import mark_safe
+from django_components import Component as DjcComponent
+from django_components import registry as djc_registry
 
 HANDLED = [
     pytest.param(
@@ -377,6 +381,71 @@ def test_escape_control_character_is_written_once(render, source, expected):
     html = render(source, n="\x1b$B", k="&#27;")
     assert "\x1b" not in html
     assert expected in html
+
+
+def test_escape_control_character_in_an_extended_template_is_written_as_a_reference(render):
+    """`{% extends %}` writes a parent template Django compiled, like `{% include %}`."""
+    base = engines["citry"].from_string("<b>{{ n }}</b>{% block x %}{% endblock %}").template
+    html = render(
+        "{% extends base %}{% block x %}<u>{{ block.super }}</u>{% endblock %}",
+        base=base,
+        n="\x1b$B",
+    )
+    assert "\x1b" not in html
+    assert "&#27;$B" in html
+
+
+def test_escape_control_character_in_a_cached_fragment_is_written_as_a_reference(render):
+    """A `{% cache %}` fragment stored by another render is written as escaped values."""
+    cache.clear()
+    cache.set(make_template_fragment_key("escfrag"), "<p>\x1b$B</p>")
+    try:
+        html = render(
+            "{% load esc_tags %}{% if 1 %}{% django_cache 60 escfrag %}<p>{{ n }}</p>"
+            "{% endcache %}{% endif %}",
+            n="other",
+        )
+    finally:
+        cache.clear()
+    assert "\x1b" not in html
+    assert "&#27;$B" in html
+
+
+@pytest.fixture
+def esc_button():
+    class EscButton(DjcComponent):
+        template = "<button>{{ label }}</button>{% slot 'extra' default %}{% endslot %}"
+
+        def get_template_data(self, args, kwargs, slots, context):
+            return {"label": kwargs["label"]}
+
+    djc_registry.register("esc_button", EscButton)
+    yield
+    djc_registry.unregister("esc_button")
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param(
+            "{% if 1 %}{% component 'esc_button' label=n %}{% endcomponent %}{% endif %}",
+            id="component",
+        ),
+        pytest.param(
+            "{% if 1 %}{% component 'esc_button' label='x' %}"
+            "{% fill 'extra' %}<i>{{ n }}</i>{% endfill %}{% endcomponent %}{% endif %}",
+            id="component-with-a-fill",
+        ),
+        pytest.param("{% if 1 %}<p {% html_attrs title=n %}>x</p>{% endif %}", id="html-attrs"),
+    ],
+)
+def test_django_components_tags_in_a_django_block_write_escape_as_a_reference(
+    render, esc_button, source
+):
+    """django-components tags still render inside a block, and their ESC is written as `&#27;`."""
+    html = render(source, n="\x1b$B")
+    assert "\x1b" not in html
+    assert "&#27;$B" in html
 
 
 def test_a_django_tag_still_receives_the_value_with_its_escape_character(render):

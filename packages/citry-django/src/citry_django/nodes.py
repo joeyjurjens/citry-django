@@ -14,8 +14,7 @@ from django.template.base import (
     VariableNode,
     render_value_in_context,
 )
-from django.template.loader_tags import BlockNode, ExtendsNode
-from django.templatetags.cache import CacheNode
+from django.template.loader_tags import BlockNode
 from django.templatetags.i18n import LanguageNode
 from django.templatetags.l10n import LocalizeNode
 from django.templatetags.tz import LocalTimeNode, TimezoneNode
@@ -139,7 +138,7 @@ TRUSTING_FILTERS = frozenset({"safe", "safeseq"})
 
 
 def written_as_citry(text: str) -> str:
-    """Escaped HTML with ESC written as Citry writes it, still marked as escaped."""
+    """Escaped HTML with ESC written as `&#27;`, still marked as escaped."""
     return mark_safe(text.replace(ESC, ESC_REFERENCE))
 
 
@@ -150,7 +149,7 @@ def is_escaped_with_esc(value: Any) -> bool:
 
 class CitryFilterExpression(FilterExpression):
     """
-    A filtered value inside a Django block, with ESC written as Citry writes it.
+    A filtered value inside a Django block, with ESC written as `&#27;`.
 
     Django's escaping filters (`escape`, `force_escape`, `urlize` and the
     like) return text marked as escaped with the value's ESC still in it. That
@@ -174,16 +173,18 @@ class CitryFilterExpression(FilterExpression):
 
 
 def _optional_node(module: Any, name: str) -> tuple[type, ...]:
-    # `{% partialdef %}` exists only from Django 6.0 on.
+    # `{% partialdef %}` and `{% partial %}` exist only from Django 6.0 on.
     node = getattr(module, name, None)
     return (node,) if node is not None else ()
 
 
-#: Django's own tags that write nothing but their children and fixed
-#: author text. Their children are compiled by the same parser and handle ESC
-#: themselves, and some of them hold HTML the author marked as such (`|safe`,
+#: Django's own tags that write nothing but fixed author text and children
+#: compiled from this same source, which write ESC as `&#27;` themselves.
+#: Some of them hold HTML the author marked as such (`|safe`,
 #: `{% autoescape off %}`), so their output is left as written. Matched by
-#: exact type: a subclass may write more than its children.
+#: exact type: a subclass may write more than its children. `{% extends %}`
+#: and `{% cache %}` are not here: they write a template Django compiled, or
+#: a fragment stored by another render.
 PASS_THROUGH_TAGS = frozenset(
     {
         defaulttags.AutoEscapeControlNode,
@@ -195,10 +196,10 @@ PASS_THROUGH_TAGS = frozenset(
         defaulttags.SpacelessNode,
         defaulttags.VerbatimNode,
         defaulttags.WithNode,
+        # `{% partial name %}` writes a `{% partialdef %}` from this same source.
         *_optional_node(defaulttags, "PartialDefNode"),
+        *_optional_node(defaulttags, "PartialNode"),
         BlockNode,
-        ExtendsNode,
-        CacheNode,
         LanguageNode,
         LocalizeNode,
         LocalTimeNode,
@@ -207,29 +208,32 @@ PASS_THROUGH_TAGS = frozenset(
 )
 
 
-def render_escaped(node: Node, context: Any, render: Any) -> str:
+def render_escaped(node: Node, context: Any, render_annotated: Any) -> str:
     """
-    Render a tag inside a Django block, with ESC in what it writes written as Citry writes it.
+    Render a tag inside a Django block, with ESC in its output written as `&#27;`.
 
     Every tag that is not plain text, a run of Citry content, a `{{ }}` or one
     of `PASS_THROUGH_TAGS` renders through here: `{% include %}`,
     `{% firstof %}`, `{% translate %}`, any `simple_tag`, `inclusion_tag` or
-    `simple_block_tag`, and any third-party tag such as django-components'
-    `{% component %}`. Such a tag writes HTML this parser did not compile,
-    often escaped by `format_html` or by a template of its own, so its whole
-    output is treated as escaped values, even HTML its own code marked safe.
-    A tag that stores its result in a variable instead
-    (`{% translate "x" as v %}`) has the stored value treated the same way, so
-    the `{{ v }}` that writes it later cannot take it as the author's HTML.
-    ``render`` is the tag class's own `render`.
+    `simple_block_tag`, any third-party tag such as django-components'
+    `{% component %}`, plus Django's `{% extends %}` and `{% cache %}`. Such
+    a tag writes HTML this parser did not compile, often escaped by
+    `format_html` or by a template of its own, so its whole output is treated
+    as escaped values, even HTML its own code marked safe. A tag that stores
+    its result in a variable instead (`{% translate "x" as v %}`) has the
+    stored value treated the same way, so the `{{ v }}` that writes it later
+    cannot take it as the author's HTML. ``render_annotated`` is the tag
+    class's own `render_annotated`.
     """
     # With autoescape off, the author asked Django not to escape at all.
     if not context.autoescape:
-        return render(node, context)
+        return render_annotated(node, context)
     scope = context.dicts[-1]
     before = dict(scope)
-    output = render(node, context)
-    # A tag stores its result in the innermost scope (`context[name] = ...`).
+    output = render_annotated(node, context)
+    # Django's tags store a result in the innermost scope
+    # (`context[name] = ...`). A value a tag puts elsewhere (`set_upward`, an
+    # outer scope, inside a list) is not checked.
     for name, value in scope.items():
         if value is not before.get(name, _UNSET) and is_escaped_with_esc(value):
             scope[name] = written_as_citry(value)
@@ -241,7 +245,8 @@ def render_escaped(node: Node, context: Any, render: Any) -> str:
 _UNSET = object()
 
 #: Each tag class mapped to its subclass that renders through `render_escaped`,
-#: made the first time a block uses that tag.
+#: made the first time a block uses that tag. It holds one entry per tag
+#: class, and django-components makes a class per registered component.
 _ESCAPING_CLASSES: dict[type, type] = {}
 
 
@@ -250,31 +255,35 @@ def escaping_class(node_class: type) -> type:
     A subclass of ``node_class`` that renders through `render_escaped`, made once and reused.
 
     A node is switched to it in place rather than wrapped, so it keeps its
-    own class and identity: `{% resetcycle %}` still finds the cycle it
-    names, and a tag that looks for its own node types in its body (such as
-    Wagtail's `{% block_field %}` inside `{% wagtail_block %}`) still finds
-    them. It adds no slots, so the switch works whatever the class's layout.
+    own class for `isinstance` and its identity: `{% resetcycle %}` still
+    finds the cycle it names, and a tag that looks for its own node types in
+    its body (such as wagtail-block-components' `{% block_field %}` inside
+    `{% wagtail_block %}`) still finds them. It adds no slots, so the switch
+    works whatever the class's layout. A switched node no longer pickles.
     """
     found = _ESCAPING_CLASSES.get(node_class)
     if found is not None:
         return found
 
-    def render(self: Node, context: Any) -> str:
-        return render_escaped(self, context, node_class.render)
+    def render_annotated(self: Node, context: Any) -> str:
+        return render_escaped(self, context, node_class.render_annotated)
 
     namespace = {
         "__slots__": (),
         "__module__": node_class.__module__,
         "__qualname__": node_class.__qualname__,
-        "render": render,
         "citry_escapes_output": True,
     }
     made = type(node_class.__name__, (node_class,), namespace)
+    # Set after the class exists: a library's metaclass or `__init_subclass__` may wrap
+    # what a subclass defines (django-components wraps `render`), and
+    # `NodeList` calls `render_annotated`, so this one is never wrapped.
+    made.render_annotated = render_annotated
     return _ESCAPING_CLASSES.setdefault(node_class, made)
 
 
 def escaping_node(node: Node) -> Node:
-    """``node`` as it renders inside a Django block, with ESC written as Citry writes it."""
+    """``node`` as it renders inside a Django block, with ESC written as `&#27;`."""
     if type(node) is VariableNode:
         return CitryVariableNode(node.filter_expression)
     if isinstance(node, (TextNode, CitrySegment, CitryVariableNode)):
@@ -324,11 +333,13 @@ class CitrySegment(template.Node):
 
 class EscapingParser(Parser):
     """
-    Django's parser, writing ESC in escaped values the way Citry does.
+    Django's parser, writing ESC in escaped values as `&#27;`, as Citry does.
 
-    Every `{{ ... }}`, every tag and every filtered value reaches the nodelist
-    through `extend_nodelist` or `compile_filter`, including those inside a
-    nested `{% if %}` or `{% for %}`, so these two places cover them all.
+    Every `{{ ... }}`, every tag and every filtered value compiled from this
+    source reaches the nodelist through `extend_nodelist` or `compile_filter`,
+    including those inside a nested `{% if %}` or `{% for %}`. A template a
+    tag loads is compiled by Django's own parser, so `render_escaped` handles
+    what such a tag writes.
     """
 
     def extend_nodelist(self, nodelist: Any, node: Any, token: Any) -> None:

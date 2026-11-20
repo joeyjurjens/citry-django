@@ -1,6 +1,7 @@
 """Custom tags in the shapes a third-party library uses, for the ESC tests in `test_robustness`."""
 
 from django import template
+from django.templatetags.cache import do_cache
 from django.utils.html import format_html
 
 register = template.Library()
@@ -28,3 +29,8 @@ def shown(value):
 def boxed(content, value):
     """Wrap the block's content and the value."""
     return format_html("<div>{}{}</div>", content, value)
+
+
+# django-components replaces `{% cache %}` in this project, so Django's own
+# cache tag is registered here under another name.
+register.tag("django_cache", do_cache)
