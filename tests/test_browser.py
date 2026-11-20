@@ -328,3 +328,38 @@ def test_an_htmx_swap_under_a_csp_carries_the_page_nonce(live_server, browser_pa
     # A refused nonce shows up here: the browser blocking the loader, or the
     # runtime refusing the island's data block.
     assert problems == []
+
+
+@pytest.mark.usefixtures("events_site")
+@pytest.mark.parametrize(
+    "overrides",
+    [
+        {"CSRF_COOKIE_NAME": "mytoken", "CSRF_HEADER_NAME": "HTTP_X_MY_CSRF"},
+        {"CSRF_COOKIE_HTTPONLY": True},
+    ],
+    ids=["renamed", "httponly"],
+)
+def test_server_events_pass_django_csrf_when_its_settings_are_not_the_defaults(
+    live_server, browser_page, settings, overrides
+):
+    """Citry's runtime reads the default cookie and header unless the page
+    tells it otherwise, and an event Django refuses would never re-render."""
+    for name, value in overrides.items():
+        setattr(settings, name, value)
+    page = browser_page
+    statuses: list[int] = []
+    page.on(
+        "response",
+        lambda response: (
+            statuses.append(response.status) if "/ext/events/" in response.url else None
+        ),
+    )
+
+    response = page.goto(f"{live_server.url}/page/")
+    assert response is not None
+    assert response.ok
+    first = page.locator(".counter").first
+    first.locator("button.bump").click()
+    sync_api.expect(first.locator("button.bump")).to_have_text("bumped: 1")
+    assert statuses
+    assert set(statuses) == {200}

@@ -21,6 +21,7 @@ see whether a component around it will be a Vue app.
 
 from __future__ import annotations
 
+import json
 import re
 import warnings
 from collections.abc import Iterable, Iterator
@@ -290,18 +291,80 @@ def ensure_csrf_cookie(request: Any) -> None:
     no form never asks Django for a token, so without this the cookie may be
     missing and the first call fails with a 403. Asking for the token is
     what `{% csrf_token %}` does too; the token itself is not written into
-    the page.
+    the page, except where Django keeps it out of the cookie (see `csrf_script`).
 
     TODO(C2): ask only for islands that hold an Events component, once Citry
     can tell which ones do. Until then every island asks.
 
-    TODO: the browser runtime reads the default cookie and header names. A
-    project with CSRF_USE_SESSIONS, CSRF_COOKIE_HTTPONLY, or a custom
-    CSRF_COOKIE_NAME or CSRF_HEADER_NAME needs a matching runtime
-    configuration, which citry-django does not write yet.
+    A project that changes where Django keeps the token is told to Citry's
+    runtime by `csrf_script`.
     """
     if isinstance(request, HttpRequest):
         get_token(request)
+
+
+#: What Django's CSRF settings are when a project has not changed them, and so
+#: what Citry's browser runtime reads without being told.
+DEFAULT_CSRF_COOKIE = "csrftoken"
+DEFAULT_CSRF_HEADER = "HTTP_X_CSRFTOKEN"
+
+
+def csrf_config(request: Any) -> dict[str, str] | None:
+    """What Citry's runtime must be told about Django's CSRF token, or None.
+
+    The runtime reads the `csrftoken` cookie and sends it as `X-CSRFToken`. A
+    project that renames either, or keeps the token where a script cannot read
+    it (`CSRF_USE_SESSIONS`, or a `CSRF_COOKIE_HTTPONLY` cookie), would get a
+    403 on every server event. Then the runtime is given the header name and
+    either the cookie's name or the token itself.
+    """
+    if not isinstance(request, HttpRequest):
+        return None
+    header = settings.CSRF_HEADER_NAME
+    hidden = settings.CSRF_USE_SESSIONS or settings.CSRF_COOKIE_HTTPONLY
+    if (
+        not hidden
+        and header == DEFAULT_CSRF_HEADER
+        and settings.CSRF_COOKIE_NAME == DEFAULT_CSRF_COOKIE
+    ):
+        return None
+    config: dict[str, str] = {}
+    if header != DEFAULT_CSRF_HEADER:
+        name = header.removeprefix("HTTP_").replace("_", "-")
+        config["header"] = name
+    if hidden:
+        config["token"] = get_token(request)
+    elif settings.CSRF_COOKIE_NAME != DEFAULT_CSRF_COOKIE:
+        config["cookie"] = settings.CSRF_COOKIE_NAME
+    return config
+
+
+def csrf_script(request: Any, csp_nonce: str | None) -> str:
+    """The script that tells Citry's runtime where Django's CSRF token is, or "".
+
+    The runtime reads it when a server event is sent, not when it starts, so
+    this only has to run once the runtime exists. It waits for it, up to five
+    seconds, because the runtime's own tag may come after this one or load
+    later, as it does in a fragment. Every island writes the same script, and
+    a second `Citry.configure` replaces the first with the same values.
+    """
+    config = csrf_config(request)
+    if config is None:
+        return ""
+    # `<`, `>` and `&` can never end the script element from inside JSON.
+    payload = (
+        json.dumps({"csrf": config})
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+        .replace("&", "\\u0026")
+    )
+    nonce = f' nonce="{escape(csp_nonce)}"' if csp_nonce else ""
+    body = (
+        "(function(c){var n=0;(function go(){var k=window.Citry;"
+        "if(k&&k.configure){k.configure(c)}else if(n++<100){setTimeout(go,50)}})()})("
+        f"{payload});"
+    )
+    return f"<script{nonce}>{body}</script>"
 
 
 def request_csp_nonce(request: Any) -> str | None:
@@ -398,7 +461,7 @@ def serialize_island(render: Any, *, csp_nonce: str | None, request: Any = None)
             "the component around it passed in."
         )
         raise IslandSlotError(outside_slot_message(render), reason) from error
-    return html
+    return html + csrf_script(request, csp_nonce)
 
 
 def outside_slot_message(render: Any) -> str:
@@ -428,7 +491,8 @@ def serialize_region(
     # scripts, so it would do nothing in the browser.
     if island:
         refuse_strategy(strategy)
-    return serialized(render, strategy=strategy, csp_nonce=csp_nonce, reason=reason), island
+    html = serialized(render, strategy=strategy, csp_nonce=csp_nonce, reason=reason)
+    return (html + csrf_script(request, csp_nonce) if island else html), island
 
 
 def serialized(

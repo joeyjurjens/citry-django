@@ -59,3 +59,54 @@ def test_an_island_in_a_django_block_of_a_region_asks_for_the_token(render_djang
     request = rf.get("/")
     html = render_django("<c-csrf-loop c-ns='[1]'/>", request=request)
     assert cookie_sent(request, html)
+
+
+def configured(html: str) -> dict | None:
+    """What the page tells Citry's runtime about the CSRF token, if anything."""
+    import json
+    import re
+
+    match = re.search(r"\}\)\((\{.*?\})\);</script>", html)
+    return None if match is None else json.loads(match.group(1))
+
+
+def test_default_settings_write_no_csrf_script(render_django, rf):
+    html = render_django("<c-csrf-live/>", request=rf.get("/"))
+    assert "k.configure(c)" not in html
+
+
+def test_a_renamed_cookie_and_header_are_given_to_the_runtime(render_django, rf, settings):
+    settings.CSRF_COOKIE_NAME = "mytoken"
+    settings.CSRF_HEADER_NAME = "HTTP_X_MY_CSRF"
+    html = render_django("<c-csrf-live/>", request=rf.get("/"))
+    assert configured(html) == {"csrf": {"header": "X-MY-CSRF", "cookie": "mytoken"}}
+
+
+def test_a_cookie_a_script_cannot_read_gives_the_runtime_the_token(render_django, rf, settings):
+    settings.CSRF_COOKIE_HTTPONLY = True
+    request = rf.get("/")
+    html = render_django("<c-csrf-live/>", request=request)
+    config = configured(html)
+    assert config is not None
+    assert config["csrf"]["token"]
+    assert "cookie" not in config["csrf"]
+
+
+def test_the_script_carries_the_pages_nonce(render_django, rf, settings):
+    settings.CSRF_USE_SESSIONS = True
+    request = rf.get("/")
+    request.session = {}
+    request.csp_nonce = "abc123"
+    html = render_django("<c-csrf-live/>", request=request)
+    assert '<script nonce="abc123">(function(c)' in html
+
+
+def test_an_island_in_a_django_block_gets_it_too(render, rf, settings):
+    settings.CSRF_COOKIE_NAME = "mytoken"
+    html = render("<c-csrf-loop c-ns='[1]'/>", request=rf.get("/"))
+    assert configured(html) == {"csrf": {"cookie": "mytoken"}}
+
+
+def test_a_static_region_gets_none(render_django, rf, settings):
+    settings.CSRF_COOKIE_NAME = "mytoken"
+    assert configured(render_django("<c-csrf-still/>", request=rf.get("/"))) is None

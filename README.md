@@ -1110,17 +1110,26 @@ on mixed templates, since a Django `{% for %}` can introduce names Citry cannot
 see. `citry check --static` does not load your app, so it cannot recognise
 Django syntax at all.
 
-### Server events need Django's default CSRF cookie
+### Server events and Django's CSRF settings
 
 Citry's server events (`Events`) pass Django's own CSRF check: the browser
 reads the `csrftoken` cookie and sends it back in the `X-CSRFToken` header.
 A page that holds a component that needs Vue asks Django for the token, as
 `{% csrf_token %}` does, so Django sets the cookie even on a page without a
-form. The token is not written into the page.
+form. With Django's default settings the token is not written into the page.
 
-The browser reads Django's default names only. With `CSRF_USE_SESSIONS`,
-`CSRF_COOKIE_HTTPONLY`, or a custom `CSRF_COOKIE_NAME` or `CSRF_HEADER_NAME`,
-server events fail Django's CSRF check.
+Citry's browser runtime reads Django's default names. When a project changes
+them, citry-django writes a small script after each island that tells the
+runtime (`Citry.configure({csrf: ...})`), so server events keep working:
+
+- A custom `CSRF_COOKIE_NAME` or `CSRF_HEADER_NAME`: the script names them.
+- `CSRF_USE_SESSIONS` or `CSRF_COOKIE_HTTPONLY`: no script can read the
+  token from a cookie, so the script carries the token itself. It is the
+  same masked token `{% csrf_token %}` writes into a form. A page that Django
+  caches for several visitors must not hold it, as with a form.
+
+The script carries the page's CSP nonce. It waits up to five seconds for the
+runtime, which a fragment loads later.
 
 ### HTML a server event sends back needs the page's CSP nonce
 
