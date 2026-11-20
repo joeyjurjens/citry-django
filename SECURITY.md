@@ -5,11 +5,9 @@
 Report a vulnerability privately. Do not open a public issue or pull
 request for it.
 
-1. Open the Security tab of the repository at
-   <https://github.com/joeyjurjens/citry-django> and choose **Report a
-   vulnerability**. Only the maintainer can read the report.
-2. If that button is not there, email joeyjurjens@gmail.com and put
-   "citry-django security" in the subject line.
+Open the Security tab of the repository at
+<https://github.com/joeyjurjens/citry-django> and choose **Report a
+vulnerability**. Only the maintainer can read the report.
 
 If the problem is in Citry or Django itself rather than in this
 repository's packages, report it to that project instead.
@@ -29,10 +27,7 @@ to show the problem.
 
 ## What to expect
 
-<!-- Maintainer: confirm both numbers, then delete this comment. -->
-
-The maintainer aims to reply to a report within [PLACEHOLDER: number of
-days], and to say within [PLACEHOLDER: number of days] whether it is
+The maintainer aims to reply to a report within 7 days, and to say within 14 days whether it is
 accepted and when a fix is likely.
 
 ## Supported versions

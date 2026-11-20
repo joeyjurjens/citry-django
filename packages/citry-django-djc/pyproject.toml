@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "citry-django-djc"
-version = "0.4.0"
+version = "0.4.0a1"
 description = "Let citry-django read Django's syntax the way django-components does, so tags carrying template source as data work in both."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Joey Jurjens", email = "joeyjurjens@gmail.com" }]
 keywords = ["citry", "django", "django-components", "templates", "components"]
-dependencies = ["citry-django>=0.4.0,<0.5", "django-components>=0.140"]
+dependencies = ["citry-django>=0.4.0a1,<0.5", "django-components>=0.140"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Web Environment",
