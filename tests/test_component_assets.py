@@ -11,7 +11,7 @@ from islands import islands
 def own(component):
     """A component whose stylesheet and behaviour are its own."""
     component(
-        "<div>slider</div>",
+        '<div ref="slider">slider</div>',
         name="own-slider",
         css_file="details/details.scss",
         js_file="slider/slider.js",
@@ -24,7 +24,7 @@ def own(component):
 def borrowed(component):
     """A component pointing at code it does not own."""
     component(
-        "<div>slider</div>",
+        '<div ref="slider">slider</div>',
         name="borrowed-slider",
         Dependencies=type(
             "Dependencies",
@@ -59,7 +59,7 @@ class TestItsOwn:
         assert len(found.configs) == 1
         assert len(found.starts) == 1
         assert '"serverData":{"slides":3}' in html
-        assert "el.dataset.slides" in html
+        assert "component.$refs.slider.dataset.slides" in html
 
 
 @pytest.mark.usefixtures("borrowed")
