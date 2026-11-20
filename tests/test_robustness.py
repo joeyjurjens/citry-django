@@ -1,6 +1,7 @@
 import threading
 
 import pytest
+from django.template import engines
 from django.utils.safestring import mark_safe
 
 HANDLED = [
@@ -241,7 +242,41 @@ def test_text_shaped_like_an_internal_comment_is_shown_as_text(
         pytest.param("{% if 1 %}<p>{{ n }}</p>{% endif %}", id="bare-name"),
         pytest.param("{% if 1 %}<p>{{ n|default:'' }}</p>{% endif %}", id="with-a-filter"),
         pytest.param("{% for x in xs %}<p>{{ x }}</p>{% endfor %}", id="loop-variable"),
-        pytest.param('<p title="{% if 1 %}{{ n }}{% endif %}">x</p>', id="attribute-value"),
+        pytest.param(
+            "{% load i18n %}{% if 1 %}<p>{% translate n %}</p>{% endif %}", id="translate"
+        ),
+        pytest.param("{% if 1 %}{% include 'esc/value.html' %}{% endif %}", id="include-name"),
+        pytest.param("{% if 1 %}{% include tpl %}{% endif %}", id="include-variable"),
+        pytest.param(
+            "{% if 1 %}{% include 'esc/value.html' with n=n only %}{% endif %}",
+            id="include-with",
+        ),
+        pytest.param(
+            "{% load esc_tags %}{% if 1 %}<p>{% echo n %}</p>{% endif %}", id="simple-tag"
+        ),
+        pytest.param(
+            "{% load esc_tags %}{% if 1 %}{% bold n %}{% endif %}", id="simple-tag-format-html"
+        ),
+        pytest.param("{% load esc_tags %}{% if 1 %}{% shown n %}{% endif %}", id="inclusion-tag"),
+        pytest.param(
+            "{% load esc_tags %}{% if 1 %}{% boxed n %}<p>x</p>{% endboxed %}{% endif %}",
+            id="simple-block-tag",
+        ),
+        pytest.param("{% if 1 %}{% firstof n as v %}<p>{{ v }}</p>{% endif %}", id="firstof-as"),
+        pytest.param(
+            "{% load i18n %}{% if 1 %}{% translate n as v %}<p>{{ v }}</p>{% endif %}",
+            id="translate-as",
+        ),
+        pytest.param(
+            "{% load i18n %}{% if 1 %}{% blocktranslate asvar v %}{{ n }}"
+            "{% endblocktranslate %}<p>{{ v }}</p>{% endif %}",
+            id="blocktranslate-asvar",
+        ),
+        pytest.param(
+            "{% load esc_tags %}{% if 1 %}{% bold n as v %}{{ v }}{% endif %}",
+            id="simple-tag-as",
+        ),
+        pytest.param("{% with v=n|escape %}<p>{{ v }}</p>{% endwith %}", id="escaped-in-with"),
         pytest.param("{% if 1 %}<p>{{ n|force_escape }}</p>{% endif %}", id="escaping-filter"),
         pytest.param("{% if 1 %}{{ n|linebreaks }}{% endif %}", id="html-writing-filter"),
         pytest.param("{% if 1 %}<p>{% firstof n %}</p>{% endif %}", id="firstof"),
@@ -255,7 +290,8 @@ def test_text_shaped_like_an_internal_comment_is_shown_as_text(
 )
 def test_escape_control_character_in_a_django_block_is_written_as_a_reference(render, source):
     """ESC in a value Django writes inside a block reaches the page as `&#27;`, like Citry."""
-    html = render(source, n="\x1b$B", xs=["\x1b$B"])
+    tpl = engines["citry"].from_string("<b>{{ n }}</b>").template
+    html = render(source, n="\x1b$B", xs=["\x1b$B"], tpl=tpl)
     assert "\x1b" not in html
     assert "&#27;$B" in html
 
@@ -269,12 +305,78 @@ def test_escape_control_character_in_a_django_block_is_written_as_a_reference(re
             "{% autoescape off %}{% if 1 %}<p>{{ n }}</p>{% endif %}{% endautoescape %}",
             id="autoescape-off",
         ),
+        pytest.param(
+            "{% autoescape off %}{% load esc_tags %}{% if 1 %}{% echo n %}{% endif %}"
+            "{% endautoescape %}",
+            id="tag-with-autoescape-off",
+        ),
+        pytest.param("{% with v=n|safe %}<p>{{ v }}</p>{% endwith %}", id="safe-in-with"),
+        pytest.param(
+            "{% load esc_tags %}{% if 1 %}{% for x in xs %}<p>{{ m }}</p>{% endfor %}{% endif %}",
+            id="safe-value-in-nested-blocks",
+        ),
     ],
 )
 def test_escape_control_character_in_trusted_html_is_left_as_written(render, source):
     """HTML the author marked as such, which Citry also leaves as written."""
-    html = render(source, n="\x1b$B", m=mark_safe("\x1b$B"))
+    html = render(source, n="\x1b$B", m=mark_safe("\x1b$B"), xs=[1])
     assert "\x1b$B" in html
+
+
+@pytest.mark.parametrize(
+    "source",
+    [
+        pytest.param('<c-esclabel label="{{ n|upper }}" />', id="filtered"),
+        pytest.param('<c-esclabel label="x {{ n }}" />', id="with-text"),
+        pytest.param('<c-esclabel label="{% if 1 %}{{ n }}{% endif %}" />', id="with-a-tag"),
+        pytest.param('{% if 1 %}<c-esclabel label="{{ n|lower }}" />{% endif %}', id="in-a-block"),
+    ],
+)
+def test_escape_control_character_in_a_django_component_input_is_written_as_a_reference(
+    render, component, source
+):
+    """A component input written with Django syntax reaches the child as HTML, escaped first."""
+    component("<p>{{ label }}</p>", name="esclabel")
+    html = render(source, n="\x1b$B")
+    assert "\x1b" not in html
+    assert "&#27;$" in html
+
+
+def test_a_safe_value_in_a_django_component_input_is_left_as_written(render, component):
+    """`|safe` in a component input is the author's HTML, as in a Django block."""
+    component("<p>{{ label }}</p>", name="esclabel")
+    html = render('<c-esclabel label="x {{ n|safe }}" />', n="\x1b$B")
+    assert "x \x1b$B" in html
+
+
+@pytest.mark.parametrize(
+    ("source", "expected"),
+    [
+        pytest.param(
+            "{% if 1 %}{{ n|json_script:'d' }}{% endif %}", '"\\u001b$B"', id="json_script"
+        ),
+        pytest.param("{% if 1 %}<p>{{ n|escapejs }}</p>{% endif %}", "\\u001B$B", id="escapejs"),
+        pytest.param(
+            "{% if 1 %}<p>{{ k }}</p>{% endif %}", "&amp;#27;", id="text-spelling-the-reference"
+        ),
+        pytest.param(
+            "{% if 1 %}<p>{{ n|escape|escape }}</p>{% endif %}", ">&#27;$B<", id="escaped-twice"
+        ),
+        pytest.param(
+            "{% load esc_tags %}{% if 1 %}{% echo k %}{% endif %}", "&amp;#27;", id="tag-text"
+        ),
+        pytest.param(
+            "{% filter force_escape %}{{ n }}{% endfilter %}",
+            "&amp;#27;$B",
+            id="filter-force-escape",
+        ),
+    ],
+)
+def test_escape_control_character_is_written_once(render, source, expected):
+    """Each value is escaped once, and JSON and JavaScript escaping are unchanged."""
+    html = render(source, n="\x1b$B", k="&#27;")
+    assert "\x1b" not in html
+    assert expected in html
 
 
 def test_a_django_tag_still_receives_the_value_with_its_escape_character(render):

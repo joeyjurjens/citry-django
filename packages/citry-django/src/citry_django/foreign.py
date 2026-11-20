@@ -12,7 +12,14 @@ from citry import (
 )
 from citry.nodes import HtmlAttr, Node
 from django.template import Context
-from django.template.base import Origin, Template, Variable, VariableDoesNotExist
+from django.template.base import (
+    DebugLexer,
+    Lexer,
+    Origin,
+    Template,
+    Variable,
+    VariableDoesNotExist,
+)
 from django.template.context import make_context
 from django.template.exceptions import TemplateSyntaxError
 from django.utils.html import escape
@@ -28,7 +35,7 @@ from .islands import (
     serialize_island,
     vue_children,
 )
-from .nodes import CitryParser, CitrySegment
+from .nodes import CitryParser, CitrySegment, EscapingParser
 from .registry import get_tokenizer
 
 SEGMENT_MARKER_LABEL = "CiTrY-SeGmEnT"
@@ -323,12 +330,7 @@ class DjangoHtmlAttr(HtmlAttr):
         if self._template is None:
             with self._template_lock:
                 if self._template is None:
-                    engine = get_django_engine().engine
-                    self._template = Template(
-                        self.loads + self.source,
-                        origin=Origin(self.origin, template_name=self.origin),
-                        engine=engine,
-                    )
+                    self._template = self.compile()
         template = self._template
         if template is None:  # pragma: no cover - guarded by the lock above
             raise RuntimeError("Django foreign template compilation did not publish a template.")
@@ -340,6 +342,35 @@ class DjangoHtmlAttr(HtmlAttr):
             autoescape=engine.engine.autoescape,
         )
         return mark_safe(template.render(django_context))
+
+    def compile(self) -> Template:
+        """Compile the input's source as Django would, writing ESC as Citry does.
+
+        The rendered input reaches the child as HTML (see `resolve`), where
+        Citry leaves it as written, so it must already have ESC in escaped
+        values written as `&#27;`, as in a Django block. Only the parser
+        differs from Django's own `Template`: names Django does not know still
+        render as its `string_if_invalid`.
+        """
+        engine = get_django_engine().engine
+        source = self.loads + self.source
+        origin = Origin(self.origin, template_name=self.origin)
+        lexer = DebugLexer(source) if engine.debug else Lexer(source)
+        parser = EscapingParser(
+            lexer.tokenize(), engine.template_libraries, engine.template_builtins, origin
+        )
+        # An empty template carries the engine and origin that tags and
+        # Django's error reports read; the nodelist is this parser's.
+        template = Template("", origin=origin, engine=engine)
+        template.source = source
+        try:
+            template.nodelist = parser.parse()
+        except Exception as error:
+            if engine.debug and getattr(error, "token", None) is not None:
+                error.template_debug = template.get_exception_info(error, error.token)
+            raise
+        template.extra_data = getattr(parser, "extra_data", {})
+        return template
 
     def lone_path(self) -> str | None:
         """The dotted path this attribute is, when that is all it is.

@@ -5,10 +5,21 @@ from typing import Any
 
 from citry import collect_compiled_body_fills, render_compiled_body
 from django import template
-from django.template.base import Node, Parser, VariableNode, render_value_in_context
-from django.template.defaulttags import CycleNode, FirstOfNode
-from django.templatetags.i18n import BlockTranslateNode, TranslateNode
-from django.utils.safestring import mark_safe
+from django.template import defaulttags
+from django.template.base import (
+    FilterExpression,
+    Node,
+    Parser,
+    TextNode,
+    VariableNode,
+    render_value_in_context,
+)
+from django.template.loader_tags import BlockNode, ExtendsNode
+from django.templatetags.cache import CacheNode
+from django.templatetags.i18n import LanguageNode
+from django.templatetags.l10n import LocalizeNode
+from django.templatetags.tz import LocalTimeNode, TimezoneNode
+from django.utils.safestring import SafeData, mark_safe
 
 from .context import HOST_PROVIDE, ContextBehavior
 from .engine import context_processors
@@ -126,30 +137,152 @@ class CitryVariableNode(VariableNode):
 #: The filters with which an author marks a value as HTML.
 TRUSTING_FILTERS = frozenset({"safe", "safeseq"})
 
-#: Django tags that write a value into the page without a `{{ }}`.
-WRITING_TAGS = (FirstOfNode, CycleNode, TranslateNode, BlockTranslateNode)
+
+def written_as_citry(text: str) -> str:
+    """Escaped HTML with ESC written as Citry writes it, still marked as escaped."""
+    return mark_safe(text.replace(ESC, ESC_REFERENCE))
 
 
-class CitryWrittenTag(Node):
+def is_escaped_with_esc(value: Any) -> bool:
+    """Whether ``value`` is text Django marked as escaped that still holds ESC."""
+    return isinstance(value, SafeData) and isinstance(value, str) and ESC in value
+
+
+class CitryFilterExpression(FilterExpression):
     """
-    A tag from `WRITING_TAGS` inside a Django block, with ESC written as Citry writes it.
+    A filtered value inside a Django block, with ESC written as Citry writes it.
 
-    These tags escape what they write themselves, so their output, not a
-    `{{ }}`, is where ESC reaches the page. Wrapping keeps the tag's own node,
-    so `{% resetcycle %}` still finds the cycle it names.
+    Django's escaping filters (`escape`, `force_escape`, `urlize` and the
+    like) return text marked as escaped with the value's ESC still in it. That
+    text can travel on before it is written, through `{% with v=n|escape %}`
+    or a tag argument, and the `{{ v }}` that finally writes it would take it
+    as the author's HTML. So the escaped text gets `&#27;` as soon as the
+    filters return it. A `safe` or `safeseq` filter means the author marked
+    the value as HTML, and autoescape off means the author asked for no
+    escaping, so both are left as written.
     """
 
-    child_nodelists = ()
+    __slots__ = ()
 
-    def __init__(self, inner: Node) -> None:
-        self.inner = inner
+    def resolve(self, context: Any, ignore_failures: bool = False) -> Any:
+        value = super().resolve(context, ignore_failures)
+        if not self.filters or not is_escaped_with_esc(value) or not context.autoescape:
+            return value
+        if any(getattr(func, "__name__", "") in TRUSTING_FILTERS for func, _ in self.filters):
+            return value
+        return written_as_citry(value)
 
-    def render(self, context: Any) -> str:
-        output = self.inner.render_annotated(context)
-        # With autoescape off, the author asked Django not to escape at all.
-        if ESC not in output or not context.autoescape:
-            return output
-        return mark_safe(output.replace(ESC, ESC_REFERENCE))
+
+def _optional_node(module: Any, name: str) -> tuple[type, ...]:
+    # `{% partialdef %}` exists only from Django 6.0 on.
+    node = getattr(module, name, None)
+    return (node,) if node is not None else ()
+
+
+#: Django's own tags that write nothing but their children and fixed
+#: author text. Their children are compiled by the same parser and handle ESC
+#: themselves, and some of them hold HTML the author marked as such (`|safe`,
+#: `{% autoescape off %}`), so their output is left as written. Matched by
+#: exact type: a subclass may write more than its children.
+PASS_THROUGH_TAGS = frozenset(
+    {
+        defaulttags.AutoEscapeControlNode,
+        defaulttags.CommentNode,
+        defaulttags.FilterNode,
+        defaulttags.ForNode,
+        defaulttags.IfChangedNode,
+        defaulttags.IfNode,
+        defaulttags.SpacelessNode,
+        defaulttags.VerbatimNode,
+        defaulttags.WithNode,
+        *_optional_node(defaulttags, "PartialDefNode"),
+        BlockNode,
+        ExtendsNode,
+        CacheNode,
+        LanguageNode,
+        LocalizeNode,
+        LocalTimeNode,
+        TimezoneNode,
+    }
+)
+
+
+def render_escaped(node: Node, context: Any, render: Any) -> str:
+    """
+    Render a tag inside a Django block, with ESC in what it writes written as Citry writes it.
+
+    Every tag that is not plain text, a run of Citry content, a `{{ }}` or one
+    of `PASS_THROUGH_TAGS` renders through here: `{% include %}`,
+    `{% firstof %}`, `{% translate %}`, any `simple_tag`, `inclusion_tag` or
+    `simple_block_tag`, and any third-party tag such as django-components'
+    `{% component %}`. Such a tag writes HTML this parser did not compile,
+    often escaped by `format_html` or by a template of its own, so its whole
+    output is treated as escaped values, even HTML its own code marked safe.
+    A tag that stores its result in a variable instead
+    (`{% translate "x" as v %}`) has the stored value treated the same way, so
+    the `{{ v }}` that writes it later cannot take it as the author's HTML.
+    ``render`` is the tag class's own `render`.
+    """
+    # With autoescape off, the author asked Django not to escape at all.
+    if not context.autoescape:
+        return render(node, context)
+    scope = context.dicts[-1]
+    before = dict(scope)
+    output = render(node, context)
+    # A tag stores its result in the innermost scope (`context[name] = ...`).
+    for name, value in scope.items():
+        if value is not before.get(name, _UNSET) and is_escaped_with_esc(value):
+            scope[name] = written_as_citry(value)
+    if ESC not in output:
+        return output
+    return written_as_citry(output)
+
+
+_UNSET = object()
+
+#: Each tag class mapped to its subclass that renders through `render_escaped`,
+#: made the first time a block uses that tag.
+_ESCAPING_CLASSES: dict[type, type] = {}
+
+
+def escaping_class(node_class: type) -> type:
+    """
+    A subclass of ``node_class`` that renders through `render_escaped`, made once and reused.
+
+    A node is switched to it in place rather than wrapped, so it keeps its
+    own class and identity: `{% resetcycle %}` still finds the cycle it
+    names, and a tag that looks for its own node types in its body (such as
+    Wagtail's `{% block_field %}` inside `{% wagtail_block %}`) still finds
+    them. It adds no slots, so the switch works whatever the class's layout.
+    """
+    found = _ESCAPING_CLASSES.get(node_class)
+    if found is not None:
+        return found
+
+    def render(self: Node, context: Any) -> str:
+        return render_escaped(self, context, node_class.render)
+
+    namespace = {
+        "__slots__": (),
+        "__module__": node_class.__module__,
+        "__qualname__": node_class.__qualname__,
+        "render": render,
+        "citry_escapes_output": True,
+    }
+    made = type(node_class.__name__, (node_class,), namespace)
+    return _ESCAPING_CLASSES.setdefault(node_class, made)
+
+
+def escaping_node(node: Node) -> Node:
+    """``node`` as it renders inside a Django block, with ESC written as Citry writes it."""
+    if type(node) is VariableNode:
+        return CitryVariableNode(node.filter_expression)
+    if isinstance(node, (TextNode, CitrySegment, CitryVariableNode)):
+        return node
+    if type(node) in PASS_THROUGH_TAGS or vars(type(node)).get("citry_escapes_output"):
+        return node
+    node.__class__ = escaping_class(type(node))
+    return node
 
 
 class CitrySegment(template.Node):
@@ -189,27 +322,35 @@ class CitrySegment(template.Node):
         return f"<CitrySegment {self.index}>"
 
 
-class CitryParser(Parser):
+class EscapingParser(Parser):
+    """
+    Django's parser, writing ESC in escaped values the way Citry does.
+
+    Every `{{ ... }}`, every tag and every filtered value reaches the nodelist
+    through `extend_nodelist` or `compile_filter`, including those inside a
+    nested `{% if %}` or `{% for %}`, so these two places cover them all.
+    """
+
+    def extend_nodelist(self, nodelist: Any, node: Any, token: Any) -> None:
+        super().extend_nodelist(nodelist, escaping_node(node), token)
+
+    def compile_filter(self, token: str) -> Any:
+        return CitryFilterExpression(token, self)
+
+
+class CitryParser(EscapingParser):
     """
     Django's parser, with two additions for the block templates we build.
 
     ``{% citryseg N %}`` marks where a run of Citry content belongs, and a bare
-    ``{{ name }}`` resolves through :class:`CitryName`. Everything else is
-    compiled by Django unchanged.
+    ``{{ name }}`` resolves through :class:`CitryName`. ESC is written as
+    :class:`EscapingParser` writes it; everything else is compiled by Django
+    unchanged.
     """
 
     def __init__(self, tokens: Any, engine: Any, origin: Any) -> None:
         super().__init__(tokens, engine.template_libraries, engine.template_builtins, origin)
         self.tags["citryseg"] = CitrySegment.from_token
-
-    def extend_nodelist(self, nodelist: Any, node: Any, token: Any) -> None:
-        # Every `{{ ... }}` and every tag that writes a value reaches the
-        # block through here, so each one gets Citry's way of writing ESC.
-        if type(node) is VariableNode:
-            node = CitryVariableNode(node.filter_expression)
-        elif isinstance(node, WRITING_TAGS):
-            node = CitryWrittenTag(node)
-        super().extend_nodelist(nodelist, node, token)
 
     def compile_filter(self, token: str) -> Any:
         expression = token.strip()
