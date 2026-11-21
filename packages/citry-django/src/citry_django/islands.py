@@ -25,11 +25,12 @@ import json
 import re
 import warnings
 from collections.abc import Iterable, Iterator
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any
 from weakref import WeakKeyDictionary
 
-from citry import CitryRender, OutsideSlotContentError
+from citry import PAGE_NONCE_HEADER, CitryRender, OutsideSlotContentError, page_nonce_from_headers
 from django.conf import settings
 from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpRequest
@@ -283,60 +284,10 @@ def island_options(citry_context: Any) -> IslandOptions:
     )
 
 
-#: What an island's configuration block says about itself. Citry writes
-#: `eventContext` and `eventBindings` for a component that has server events,
-#: and for no other component.
-PREPARED_PROTOCOL = re.compile(r'"protocol"\s*:\s*"citry-vue-prepared/1"')
-EVENTS_MARK = re.compile(r'"(?:eventContext|eventBindings)"')
-
-
-def holds_server_events(html: str) -> bool:
-    """Whether an island's HTML has a component with server events.
-
-    Reads the configuration block Citry wrote beside the island. When it
-    cannot tell, because there is no block or it is a protocol this does not
-    know, the answer is yes: asking for the token costs a cookie, and not
-    asking costs a 403 on the first server event.
-    """
-    # Only the data blocks: an inlined runtime names the protocol too.
-    blocks = [
-        match.group("body")
-        for match in SCRIPT.finditer(html)
-        if "application/json" in match.group("attrs")
-        and "citry-vue-prepared" in match.group("body")
-    ]
-    if not blocks:
-        return True
-    for body in blocks:
-        if PREPARED_PROTOCOL.search(body) is None or EVENTS_MARK.search(body):
-            return True
-    return False
-
-
-#: The request header an htmx request carries the nonce of the page it was sent from in.
-PAGE_NONCE_HEADER = "X-Citry-Page-Nonce"
-
-#: What a nonce looks like: base64 or base64url, which is what django-csp and
-#: Django's CSP middleware write. Anything else in the header is ignored.
-NONCE_SHAPE = re.compile(r"[A-Za-z0-9_+/=-]{8,128}")
-
-
-def sent_page_nonce(request: Any) -> str | None:
-    """The nonce the page itself sent with this request, if it did.
-
-    `page_nonce_script` makes htmx send it. It is the right nonce even when the
-    visitor has several tabs open, which a nonce kept in the session is not.
-    A request can say anything here, but the nonce only ends up in that
-    request's own response.
-    """
-    headers = getattr(request, "headers", None)
-    value = None if headers is None else headers.get(PAGE_NONCE_HEADER)
-    return value if isinstance(value, str) and NONCE_SHAPE.fullmatch(value) else None
-
-
-def json_for_script(value: Any) -> str:
-    """`value` as JSON that can stand inside a `<script>` element."""
-    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+#: The request attribute that records what a partial's islands did with the
+#: page nonce header, for `PageNonceMiddleware`: `"read"` when they looked for
+#: it, `"sent"` when they used the nonce it carried.
+PAGE_NONCE_STATE = "_citry_django_page_nonce"
 
 
 def page_nonce_script(request: Any, csp_nonce: str | None) -> str:
@@ -344,106 +295,180 @@ def page_nonce_script(request: Any, csp_nonce: str | None) -> str:
 
     An htmx response that holds an island lands in a page that is already
     loaded, and the runtime starts it only if it carries that page's nonce.
-    The server cannot tell which page a request came from, so the page says.
-    Only requests to the page's own origin carry it. Every island writes the
-    same script, and the second one does nothing.
+    The server cannot tell which page a request came from, so the page says:
+    this is the htmx snippet from Citry's docs ("Nonces in fragments"), which
+    sends `Citry.pageNonce()` in the `X-Citry-Page-Nonce` header to the page's
+    own origin only. Every island writes it, and the second copy does nothing.
 
     A partial response is not a page and writes none: it lands in one.
     """
     if not csp_nonce or is_partial(request) or not isinstance(request, HttpRequest):
         return ""
+    # The runtime is asked at request time, not now: under the "document"
+    # strategy its tag comes later in the page than this script.
     body = (
-        "(function(n){if(window.__citryPageNonce)return;window.__citryPageNonce=1;"
-        'document.addEventListener("htmx:configRequest",function(e){try{'
+        "(function(h){if(window.__citryPageNonce)return;window.__citryPageNonce=1;"
+        'document.addEventListener("htmx:configRequest",function(e){'
+        "var k=window.Citry,n=k&&k.pageNonce&&k.pageNonce();if(!n)return;try{"
         "var u=new URL(e.detail.path,location.href);"
-        f'if(u.origin===location.origin)e.detail.headers["{PAGE_NONCE_HEADER}"]=n'
+        "if(u.origin===location.origin)e.detail.headers[h]=n"
         "}catch(x){}})})("
-        f"{json_for_script(csp_nonce)});"
+        f"{json_for_script(PAGE_NONCE_HEADER)});"
     )
     return f'<script nonce="{escape(csp_nonce)}">{body}</script>'
 
 
-def with_page_scripts(html: str, request: Any, csp_nonce: str | None) -> str:
+def json_for_script(value: Any) -> str:
+    """`value` as JSON that can stand inside a `<script>` element."""
+    return json.dumps(value).replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026")
+
+
+def with_page_scripts(html: str, render: Any, request: Any, csp_nonce: str | None) -> str:
     """`html` for an island, with the scripts its page needs beside it."""
-    return with_csrf(html, request, csp_nonce) + page_nonce_script(request, csp_nonce)
+    return with_csrf(html, render, request, csp_nonce) + page_nonce_script(request, csp_nonce)
 
 
-def with_csrf(html: str, request: Any, csp_nonce: str | None) -> str:
-    """`html` for an island, after doing what its server events need from Django.
+def with_csrf(html: str, render: Any, request: Any, csp_nonce: str | None) -> str:
+    """`html` for an island, after doing what its CSRF-protected requests need from Django.
 
-    Only an island with server events calls Django's CSRF check, so only it
-    makes Django send the cookie (and the `Vary: Cookie` that comes with it),
-    and only it needs `csrf_script`. A page of islands without events stays
-    cacheable.
+    Citry's `needs_csrf_token()` says whether the browser may send the token
+    from this island: a server event, or the messages request of a locale
+    switch. Only then does the island make Django send the cookie (and the
+    `Vary: Cookie` that comes with it), so a page of islands without them
+    stays cacheable by a shared cache.
     """
-    if not holds_server_events(html):
+    if not render.needs_csrf_token():
         return html
+    app = get_citry_app()
+    refuse_unmapped_csrf_settings(app)
     ensure_csrf_cookie(request)
-    return html + csrf_script(request, csp_nonce)
+    return html + csrf_script(app, request, csp_nonce)
 
 
 def ensure_csrf_cookie(request: Any) -> None:
     """Make Django send the CSRF cookie with the response that holds an island.
 
-    Citry's Events calls pass Django's own CSRF check: the browser runtime
-    reads the `csrftoken` cookie and sends it back as a header. A page with
-    no form never asks Django for a token, so without this the cookie may be
-    missing and the first call fails with a 403. Asking for the token is
-    what `{% csrf_token %}` does too; the token itself is not written into
-    the page, except where Django keeps it out of the cookie (see
-    `csrf_script`). Called through `with_csrf`, for islands with server events.
+    Citry's browser code passes Django's own CSRF check: it reads the
+    `csrftoken` cookie and sends it back as a header. A page with no form
+    never asks Django for a token, so without this the cookie may be missing
+    and the first call fails with a 403. Asking for the token is what
+    `{% csrf_token %}` does too; the token itself is not written into the
+    page, except where Django keeps it out of the cookie (see `csrf_script`).
     """
     if isinstance(request, HttpRequest):
         get_token(request)
 
 
 #: What Django's CSRF settings are when a project has not changed them, and so
-#: what Citry's browser runtime reads without being told.
+#: what Citry's browser code uses without being told.
 DEFAULT_CSRF_COOKIE = "csrftoken"
 DEFAULT_CSRF_HEADER = "HTTP_X_CSRFTOKEN"
 
 
-def csrf_config(request: Any) -> dict[str, str] | None:
-    """What Citry's runtime must be told about Django's CSRF token, or None.
+def browser_header(meta_name: str) -> str:
+    """Django's `CSRF_HEADER_NAME`, a `request.META` key, as the header a browser sends.
 
-    The runtime reads the `csrftoken` cookie and sends it as `X-CSRFToken`. A
-    project that renames either, or keeps the token where a script cannot read
-    it (`CSRF_USE_SESSIONS`, or a `CSRF_COOKIE_HTTPONLY` cookie), would get a
-    403 on every server event. Then the runtime is given the header name and
-    either the cookie's name or the token itself.
+    `HTTP_X_MY_CSRF` is the `X-MY-CSRF` header; header names match without
+    regard to case, so the case written here does not matter.
+    """
+    if meta_name == DEFAULT_CSRF_HEADER:
+        return "X-CSRFToken"
+    return meta_name.removeprefix("HTTP_").replace("_", "-")
+
+
+def csrf_hidden() -> bool:
+    """Whether Django keeps the CSRF token where no script can read it."""
+    return bool(settings.CSRF_USE_SESSIONS or settings.CSRF_COOKIE_HTTPONLY)
+
+
+def csrf_settings() -> dict[str, str | None]:
+    """Django's CSRF settings as Citry's `_csrf_cookie` and `_csrf_header` Events settings.
+
+    Spread the result into the `"events"` entry of `extensions_defaults`
+    when you build your `Citry` instance. Citry writes the names into each
+    island's configuration block, and its browser code reads the token from
+    that cookie and sends it in that header. Keys you write after the spread
+    replace these.
+
+    Returns:
+        Only what differs from Citry's defaults (`csrftoken` and
+        `X-CSRFToken`), so a project on Django's defaults gets `{}`.
+        `_csrf_cookie` is `None` when `CSRF_USE_SESSIONS` or
+        `CSRF_COOKIE_HTTPONLY` keeps the token out of reach of scripts; each
+        island that needs the token then gives it to the browser itself (see
+        `csrf_script`).
+    """
+    names: dict[str, str | None] = {}
+    if csrf_hidden():
+        names["_csrf_cookie"] = None
+    elif settings.CSRF_COOKIE_NAME != DEFAULT_CSRF_COOKIE:
+        names["_csrf_cookie"] = settings.CSRF_COOKIE_NAME
+    if settings.CSRF_HEADER_NAME != DEFAULT_CSRF_HEADER:
+        names["_csrf_header"] = browser_header(settings.CSRF_HEADER_NAME)
+    return names
+
+
+def refuse_unmapped_csrf_settings(app: Any) -> None:
+    """Raise when Django's CSRF names differ from Citry's and the app does not say so.
+
+    Citry's browser code would then read the wrong cookie or send the wrong
+    header, and every server event would fail Django's check with a 403, far
+    from the cause. A name the app sets itself wins, whatever it is. A token
+    Django hides needs nothing here: `csrf_script` gives it to the browser.
+    """
+    events = app.settings.extensions_defaults.get("events", {})
+    missing = [
+        name for name, value in csrf_settings().items() if name not in events and value is not None
+    ]
+    if not missing:
+        return
+    names = " and ".join(f"'{name}'" for name in missing)
+    msg = (
+        f"Django's CSRF settings name another cookie or header than Citry's defaults, "
+        f"but the Citry app sets no {names} Events setting, so every server event would "
+        "fail Django's CSRF check. Build the app with "
+        'extensions_defaults={"events": {**csrf_settings(), ...}} '
+        "(from citry_django import csrf_settings)."
+    )
+    raise ImproperlyConfigured(msg)
+
+
+def csrf_script(app: Any, request: Any, csp_nonce: str | None) -> str:
+    """The script that gives Citry's browser code what its settings cannot, or "".
+
+    Citry writes the app's `_csrf_cookie` and `_csrf_header` into the
+    configuration block, so a page needs no script for them. Two cases are
+    left, as Citry's docs ("CSRF cookie and header") say:
+
+    - Django keeps the token out of reach of scripts (`CSRF_USE_SESSIONS`,
+      `CSRF_COOKIE_HTTPONLY`), or the app sets `_csrf_cookie` to None: the
+      script carries the token itself, the same masked token
+      `{% csrf_token %}` writes into a form.
+    - A partial without a nonce: on a page without one, Citry ignores the
+      names in a fragment's block, because injected markup could have
+      written them, so the script names them.
+
+    The script calls `Citry.configure`, which needs the runtime, and the
+    runtime's tag may come after this one or load later, as it does in a
+    fragment. So it waits for it, up to five seconds. Every island writes
+    the same script, and a second call replaces the first with the same
+    values.
     """
     if not isinstance(request, HttpRequest):
-        return None
-    header = settings.CSRF_HEADER_NAME
-    hidden = settings.CSRF_USE_SESSIONS or settings.CSRF_COOKIE_HTTPONLY
-    if (
-        not hidden
-        and header == DEFAULT_CSRF_HEADER
-        and settings.CSRF_COOKIE_NAME == DEFAULT_CSRF_COOKIE
-    ):
-        return None
+        return ""
+    events = app.settings.extensions_defaults.get("events", {})
+    cookie = events.get("_csrf_cookie", DEFAULT_CSRF_COOKIE)
+    header = events.get("_csrf_header")
     config: dict[str, str] = {}
-    if header != DEFAULT_CSRF_HEADER:
-        name = header.removeprefix("HTTP_").replace("_", "-")
-        config["header"] = name
-    if hidden:
+    if csrf_hidden() or cookie is None:
         config["token"] = get_token(request)
-    elif settings.CSRF_COOKIE_NAME != DEFAULT_CSRF_COOKIE:
-        config["cookie"] = settings.CSRF_COOKIE_NAME
-    return config
-
-
-def csrf_script(request: Any, csp_nonce: str | None) -> str:
-    """The script that tells Citry's runtime where Django's CSRF token is, or "".
-
-    The runtime reads it when a server event is sent, not when it starts, so
-    this only has to run once the runtime exists. It waits for it, up to five
-    seconds, because the runtime's own tag may come after this one or load
-    later, as it does in a fragment. Every island writes the same script, and
-    a second `Citry.configure` replaces the first with the same values.
-    """
-    config = csrf_config(request)
-    if config is None:
+    elif is_partial(request) and not csp_nonce and cookie != DEFAULT_CSRF_COOKIE:
+        config["cookie"] = cookie
+    # Only with a script to write anyway, or where the block's names do not
+    # count, does the header need saying here too.
+    if header is not None and (config or (is_partial(request) and not csp_nonce)):
+        config["header"] = header
+    if not config:
         return ""
     payload = json_for_script({"csrf": config})
     nonce = f' nonce="{escape(csp_nonce)}"' if csp_nonce else ""
@@ -472,22 +497,40 @@ def request_csp_nonce(request: Any) -> str | None:
 def island_csp_nonce(request: Any, nonce: str | None) -> str | None:
     """The nonce the islands of this response carry: `nonce`, unless it is a partial.
 
-    A partial response lands in a page that is already loaded. The page says
-    which one it is with a request header (see `page_nonce_script`), and that
-    wins. Otherwise it is the nonce citry-django kept in the session when it
-    rendered a page (see `events.partial_csp_nonce`), which is the last page
-    the visitor loaded and so may be another tab's. Without either, `nonce`
-    stands; under a nonce-based policy the browser runtime then refuses the
-    island and says so in the console.
+    A partial response lands in a page that is already loaded, so its
+    islands need that page's nonce. In this order:
+
+    1. The nonce the page sent in the `X-Citry-Page-Nonce` header, read with
+       Citry's `page_nonce_from_headers()`. `page_nonce_script` makes htmx
+       send it. It is right even with several tabs open.
+    2. The nonce citry-django kept in the session when it rendered a page,
+       when the app asked for that (see `events.partial_csp_nonce`). It is the
+       last page the visitor loaded, so it may be another tab's.
+    3. `nonce`, the partial's own. Under a nonce-based policy the browser
+       runtime then refuses the island and says so in the console.
+
+    The answer depends on the header, so the request records that for
+    `PageNonceMiddleware`, which marks the response for caches.
     """
-    if is_partial(request):
-        sent = sent_page_nonce(request)
-        if sent is not None:
-            return sent
-        kept = partial_csp_nonce(get_citry_app(), request)
-        if kept is not None:
-            return kept
+    if not is_partial(request):
+        return nonce
+    sent = page_nonce_from_headers(request.headers) if hasattr(request, "headers") else None
+    note_page_nonce(request, sent=sent is not None)
+    if sent is not None:
+        return sent
+    kept = partial_csp_nonce(get_citry_app(), request)
+    if kept is not None:
+        return kept
     return nonce
+
+
+def note_page_nonce(request: Any, *, sent: bool) -> None:
+    """Record on `request` that its answer depends on the page nonce header."""
+    if getattr(request, PAGE_NONCE_STATE, None) == "sent":
+        return
+    # A request object that takes no attributes has no response to mark.
+    with suppress(AttributeError):
+        setattr(request, PAGE_NONCE_STATE, "sent" if sent else "read")
 
 
 def island_strategy(request: Any) -> str:
@@ -554,7 +597,7 @@ def serialize_island(render: Any, *, csp_nonce: str | None, request: Any = None)
             "the component around it passed in."
         )
         raise IslandSlotError(outside_slot_message(render), reason) from error
-    return with_page_scripts(html, request, csp_nonce)
+    return with_page_scripts(html, render, request, csp_nonce)
 
 
 def outside_slot_message(render: Any) -> str:
@@ -585,7 +628,7 @@ def serialize_region(
     if island:
         refuse_strategy(strategy)
     html = serialized(render, strategy=strategy, csp_nonce=csp_nonce, reason=reason)
-    return (with_page_scripts(html, request, csp_nonce) if island else html), island
+    return (with_page_scripts(html, render, request, csp_nonce) if island else html), island
 
 
 def serialized(

@@ -232,7 +232,8 @@ class TestServing:
         assert response.status_code == 200
         assert b'"alice"' in response.content
         assert "Content-Encoding" not in response
-        assert "Vary" not in response
+        # Citry lists X-Citry-Page-Nonce on every event answer; the mount adds nothing.
+        assert "Accept-Encoding" not in response.get("Vary", "")
         assert response["Cache-Control"] == "no-store"
 
     def test_a_body_is_gzipped_once(self, mounted):

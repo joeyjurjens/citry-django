@@ -2,14 +2,21 @@
 
 The session keeps one nonce, the last page's. With two tabs open that is the
 wrong nonce for the older one, so htmx sends the nonce of the page it is
-in with each request (`X-Citry-Page-Nonce`), and the partial's islands use it.
+in with each request (`X-Citry-Page-Nonce`, from Citry's `Citry.pageNonce()`),
+and the partial's islands use it, read with Citry's `page_nonce_from_headers()`.
 """
 
 from __future__ import annotations
 
-import pytest
+from types import SimpleNamespace
 
-from citry_django.islands import PAGE_NONCE_HEADER, page_nonce_script, sent_page_nonce
+import pytest
+from citry import PAGE_NONCE_HEADER
+from django.http import HttpResponse
+
+from citry_django import page_csp_nonce
+from citry_django.islands import page_nonce_script
+from citry_django.middleware import PageNonceMiddleware
 
 
 @pytest.fixture(autouse=True)
@@ -43,9 +50,12 @@ def partial(rf, sent=None, nonce="ownNonce12345"):
 
 def test_a_page_with_an_island_makes_htmx_send_its_nonce(render_django, rf):
     html = render_django("<c-nonce-live/>", request=page(rf))
-    assert '<script nonce="pageNonce1234">(function(n)' in html
-    assert PAGE_NONCE_HEADER in html
-    assert '"pageNonce1234");</script>' in html
+    assert '<script nonce="pageNonce1234">(function(h)' in html
+    assert f'"{PAGE_NONCE_HEADER}");</script>' in html
+    # The runtime says the nonce when htmx asks, so the script does not name it.
+    assert "k.pageNonce()" in html
+    script = html.split('<script nonce="pageNonce1234">(function(h)')[1].split("</script>")[0]
+    assert "pageNonce1234" not in script
 
 
 def test_a_page_without_an_island_writes_none(render_django, rf):
@@ -82,11 +92,10 @@ def test_the_sent_nonce_wins_over_the_one_kept_in_the_session(render_django, rf)
     assert "newerTabNonce1" not in html
 
 
-@pytest.mark.parametrize(
-    "bad", ["short", "has space in it 123", 'quo"te12345678', "<script>alert(1)", "a" * 200]
-)
-def test_a_header_that_is_not_a_nonce_is_ignored(rf, bad):
-    assert sent_page_nonce(partial(rf, sent=bad)) is None
+@pytest.mark.parametrize("bad", ["has space in it 123", 'quo"te12345678', "<script>", "a" * 300])
+def test_a_header_that_is_not_a_nonce_is_ignored(render_django, rf, bad):
+    html = render_django("<c-nonce-live/>", request=partial(rf, sent=bad))
+    assert "ownNonce12345" in html
 
 
 def test_a_nonce_is_escaped_in_the_script(rf):
@@ -95,10 +104,44 @@ def test_a_nonce_is_escaped_in_the_script(rf):
     assert script.count("</script>") == 1
 
 
+def event_request(request):
+    return SimpleNamespace(native=request, headers=request.headers)
+
+
 def test_a_server_event_client_can_send_the_nonce_too(rf):
-    from types import SimpleNamespace
-
-    from citry_django import page_csp_nonce
-
     request = partial(rf, sent="olderTabNonce1")
-    assert page_csp_nonce(SimpleNamespace(native=request)) == "olderTabNonce1"
+    assert page_csp_nonce(event_request(request)) == "olderTabNonce1"
+
+
+def test_a_server_event_without_the_header_falls_back_to_the_session(rf):
+    request = rf.get("/")
+    request.session = {"citry_django_csp_nonce": "keptNonce1234"}
+    assert page_csp_nonce(event_request(request)) == "keptNonce1234"
+
+
+def marked(request):
+    return PageNonceMiddleware(lambda request: HttpResponse("x"))(request)
+
+
+def test_a_partial_that_used_the_header_is_kept_out_of_caches(render_django, rf):
+    request = partial(rf, sent="olderTabNonce1")
+    render_django("<c-nonce-live/>", request=request)
+    response = marked(request)
+    assert PAGE_NONCE_HEADER in response["Vary"]
+    assert "no-store" in response["Cache-Control"]
+
+
+def test_a_partial_that_looked_for_the_header_varies_on_it(render_django, rf):
+    request = partial(rf)
+    render_django("<c-nonce-live/>", request=request)
+    response = marked(request)
+    assert PAGE_NONCE_HEADER in response["Vary"]
+    assert not response.has_header("Cache-Control")
+
+
+def test_a_whole_page_is_left_alone(render_django, rf):
+    request = page(rf)
+    render_django("<c-nonce-live/>", request=request)
+    response = marked(request)
+    assert not response.has_header("Vary")
+    assert not response.has_header("Cache-Control")

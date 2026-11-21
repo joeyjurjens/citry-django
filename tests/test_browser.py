@@ -11,7 +11,9 @@ import re
 
 import pytest
 
+from citry_django import csrf_settings
 from citry_django.registry import citry_app_source
+from events_site.app import app as events_app
 from events_site.urls import NOTE
 from islands import islands, runtime_scripts
 
@@ -346,12 +348,16 @@ def test_an_htmx_swap_under_a_csp_carries_the_page_nonce(live_server, browser_pa
     ids=["renamed", "httponly"],
 )
 def test_server_events_pass_django_csrf_when_its_settings_are_not_the_defaults(
-    live_server, browser_page, settings, overrides
+    live_server, browser_page, settings, overrides, monkeypatch
 ):
-    """Citry's runtime reads the default cookie and header unless the page
-    tells it otherwise, and an event Django refuses would never re-render."""
+    """Citry's runtime reads the default cookie and header unless the app's
+    Events settings name others, and an event Django refuses would never
+    re-render. The app maps Django's settings with `csrf_settings()`, as a
+    project does when it builds its app."""
     for name, value in overrides.items():
         setattr(settings, name, value)
+    events = {**events_app.settings.extensions_defaults["events"], **csrf_settings()}
+    monkeypatch.setitem(events_app.settings.extensions_defaults, "events", events)
     page = browser_page
     statuses: list[int] = []
     page.on(
