@@ -596,7 +596,12 @@ Things to know:
   `Citry.pageNonce()` in an `X-Citry-Page-Nonce` header with each request to
   the page's own origin. It checks the URL against both the page's address
   and its base URL, so a `<base>` tag cannot send the nonce to another site.
-  A `base-uri 'none'` or `'self'` directive in your policy helps too. The partial's islands use that nonce, read with
+  A `base-uri 'none'` or `'self'` directive in your policy helps too. A
+  URL on your site that redirects to an address taken from the request
+  passes the header on to another site. Django's own redirect helpers
+  check the host (`url_has_allowed_host_and_scheme`), so use them. To keep
+  the header to the URLs that answer with fragments, set
+  [`CITRY_PAGE_NONCE_PATHS`](#citry_page_nonce_paths). The partial's islands use that nonce, read with
   Citry's `page_nonce_from_headers()`, so each tab gets its own. A request
   that is not htmx's can send the header itself. Without the header, a
   partial uses the nonce citry-django keeps in the session, if the app
@@ -903,6 +908,7 @@ needs to say otherwise.
 | [`CITRY_DEPS_STRATEGY`](#citry_deps_strategy) | `"document"` |
 | [`CITRY_COLLECT_PAGE_ASSETS`](#citry_collect_page_assets) | `True` |
 | [`CITRY_COMPRESSOR_FILE_TYPES`](#citry_compressor_file_types) | `{}` |
+| [`CITRY_PAGE_NONCE_PATHS`](#citry_page_nonce_paths) | `None` |
 
 #### `CITRY_APP`
 
@@ -959,6 +965,22 @@ Only read when citry-django-compressor is installed.
 That extension takes one option of its own, `sort`, which decides the order
 inside a bundle. On by default, so the same set of components is the same file
 wherever they sit on the page.
+
+#### `CITRY_PAGE_NONCE_PATHS`
+
+The URL path prefixes that htmx sends the page's CSP nonce to, in the
+`X-Citry-Page-Nonce` header (see [partial
+responses](#partial-responses-htmx-and-template-partials)). `None`, the
+default, sends it to every path on the page's own origin:
+
+```python
+CITRY_PAGE_NONCE_PATHS = ["/cards/", "/partials/"]
+```
+
+A prefix matches the start of the URL path, so `"/cards/"` covers
+`/cards/42`. Each prefix must start with `/`; another value raises
+`ImproperlyConfigured` when a page writes the snippet. A partial whose
+request does not send the header falls back as described there.
 
 ## Limits
 

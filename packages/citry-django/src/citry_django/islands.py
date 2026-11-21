@@ -311,18 +311,40 @@ def page_nonce_script(request: Any, csp_nonce: str | None) -> str:
     # resolved both ways. The guard reads only the window's own property,
     # which an element's `id` or `name` cannot set.
     body = (
-        "(function(h){var w=window;"
+        "(function(h,a){var w=window;"
         'if(Object.prototype.hasOwnProperty.call(w,"__citryPageNonce"))return;'
         "w.__citryPageNonce=1;"
         'document.addEventListener("htmx:configRequest",function(e){'
         "var k=w.Citry,n=k&&k.pageNonce&&k.pageNonce();if(!n)return;try{"
-        "var o=location.origin,p=e.detail.path;"
-        "if(new URL(p,location.href).origin===o&&new URL(p,document.baseURI).origin===o)"
+        "var o=location.origin,p=e.detail.path,u=new URL(p,location.href);"
+        "if(u.origin!==o||new URL(p,document.baseURI).origin!==o)return;"
+        "if(!a||a.some(function(x){return u.pathname.indexOf(x)===0}))"
         "e.detail.headers[h]=n"
         "}catch(x){}})})("
-        f"{json_for_script(PAGE_NONCE_HEADER)});"
+        f"{json_for_script(PAGE_NONCE_HEADER)},{json_for_script(page_nonce_paths())});"
     )
     return f'<script nonce="{escape(csp_nonce)}">{body}</script>'
+
+
+def page_nonce_paths() -> list[str] | None:
+    """The URL path prefixes the page nonce snippet may send the header to, or None for all.
+
+    `CITRY_PAGE_NONCE_PATHS` lets a project keep the nonce away from URLs
+    that do not answer with fragments, such as one that redirects.
+    """
+    paths = getattr(settings, "CITRY_PAGE_NONCE_PATHS", None)
+    if paths is None:
+        return None
+    # A bare string would be read as a list of one-character prefixes.
+    if isinstance(paths, str) or not all(
+        isinstance(path, str) and path.startswith("/") for path in paths
+    ):
+        msg = (
+            "settings.CITRY_PAGE_NONCE_PATHS must be a list of URL path prefixes that "
+            f"start with '/', or None; got {paths!r}"
+        )
+        raise ImproperlyConfigured(msg)
+    return list(paths)
 
 
 def json_for_script(value: Any) -> str:

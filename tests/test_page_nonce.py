@@ -12,6 +12,7 @@ from types import SimpleNamespace
 
 import pytest
 from citry import PAGE_NONCE_HEADER
+from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponse
 
 from citry_django import page_csp_nonce
@@ -50,16 +51,30 @@ def partial(rf, sent=None, nonce="ownNonce12345"):
 
 def test_a_page_with_an_island_makes_htmx_send_its_nonce(render_django, rf):
     html = render_django("<c-nonce-live/>", request=page(rf))
-    assert '<script nonce="pageNonce1234">(function(h)' in html
-    assert f'"{PAGE_NONCE_HEADER}");</script>' in html
+    assert '<script nonce="pageNonce1234">(function(h,a)' in html
+    assert f'"{PAGE_NONCE_HEADER}",null);</script>' in html
     # The runtime says the nonce when htmx asks, so the script does not name it.
     assert "k.pageNonce()" in html
-    script = html.split('<script nonce="pageNonce1234">(function(h)')[1].split("</script>")[0]
+    script = html.split('<script nonce="pageNonce1234">(function(h,a)')[1].split("</script>")[0]
     assert "pageNonce1234" not in script
     # htmx resolves the path against the base URL, so that must stay on the
     # page's origin too, and the guard must ignore elements named like it.
-    assert "new URL(p,document.baseURI).origin===o" in script
+    assert "new URL(p,document.baseURI).origin!==o" in script
     assert 'hasOwnProperty.call(w,"__citryPageNonce")' in script
+
+
+def test_path_prefixes_limit_where_the_snippet_sends(render_django, rf, settings):
+    settings.CITRY_PAGE_NONCE_PATHS = ["/cards/", "/partials/"]
+    html = render_django("<c-nonce-live/>", request=page(rf))
+    assert f'"{PAGE_NONCE_HEADER}",["/cards/", "/partials/"]);</script>' in html
+    assert "u.pathname.indexOf(x)===0" in html
+
+
+@pytest.mark.parametrize("bad", ["/cards/", ["cards/"], [1]])
+def test_path_prefixes_of_another_shape_are_refused(rf, settings, bad):
+    settings.CITRY_PAGE_NONCE_PATHS = bad
+    with pytest.raises(ImproperlyConfigured, match="CITRY_PAGE_NONCE_PATHS"):
+        page_nonce_script(page(rf), "pageNonce1234")
 
 
 def test_a_page_without_an_island_writes_none(render_django, rf):
