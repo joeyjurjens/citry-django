@@ -11,7 +11,9 @@ import re
 
 import pytest
 
+from citry_django import csrf_settings
 from citry_django.registry import citry_app_source
+from events_site.app import app as events_app
 from events_site.urls import NOTE
 from islands import islands, runtime_scripts
 
@@ -31,7 +33,8 @@ def events_site(settings, monkeypatch):
 
 
 @pytest.fixture
-def browser_page():
+def browser_context():
+    """One visitor: tabs opened from it share cookies."""
     with sync_api.sync_playwright() as playwright:
         try:
             browser = playwright.chromium.launch(
@@ -40,9 +43,14 @@ def browser_page():
         except sync_api.Error as error:
             pytest.skip(f"no Chromium for Playwright: {error}")
         try:
-            yield browser.new_page()
+            yield browser.new_context()
         finally:
             browser.close()
+
+
+@pytest.fixture
+def browser_page(browser_context):
+    return browser_context.new_page()
 
 
 @pytest.mark.usefixtures("events_site")
@@ -340,12 +348,16 @@ def test_an_htmx_swap_under_a_csp_carries_the_page_nonce(live_server, browser_pa
     ids=["renamed", "httponly"],
 )
 def test_server_events_pass_django_csrf_when_its_settings_are_not_the_defaults(
-    live_server, browser_page, settings, overrides
+    live_server, browser_page, settings, overrides, monkeypatch
 ):
-    """Citry's runtime reads the default cookie and header unless the page
-    tells it otherwise, and an event Django refuses would never re-render."""
+    """Citry's runtime reads the default cookie and header unless the app's
+    Events settings name others, and an event Django refuses would never
+    re-render. The app maps Django's settings with `csrf_settings()`, as a
+    project does when it builds its app."""
     for name, value in overrides.items():
         setattr(settings, name, value)
+    events = {**events_app.settings.extensions_defaults["events"], **csrf_settings()}
+    monkeypatch.setitem(events_app.settings.extensions_defaults, "events", events)
     page = browser_page
     statuses: list[int] = []
     page.on(
@@ -363,3 +375,26 @@ def test_server_events_pass_django_csrf_when_its_settings_are_not_the_defaults(
     sync_api.expect(first.locator("button.bump")).to_have_text("bumped: 1")
     assert statuses
     assert set(statuses) == {200}
+
+
+@pytest.mark.django_db(transaction=True)
+@pytest.mark.usefixtures("events_site", "csp")
+def test_an_htmx_swap_in_an_older_tab_carries_that_tabs_nonce(live_server, browser_context):
+    """Two tabs of one visitor, each with its own nonce. The session keeps
+    only the last page's nonce, so the page sends its own with each request,
+    and a swap in the first tab carries the first tab's nonce."""
+    first = browser_context.new_page()
+    problems, _ = watch(first)
+    first.goto(f"{live_server.url}/swap/")
+    assert mounted_hosts(first) == [True]
+
+    # The same visitor (one cookie jar) opens the page again in another tab.
+    second = browser_context.new_page()
+    second.goto(f"{live_server.url}/swap/")
+    assert mounted_hosts(second) == [True]
+
+    swap_in_a_card(first)
+    card = first.locator("#cards .counter")
+    card.locator("button.bump").click()
+    sync_api.expect(card.locator("button.bump")).to_have_text("bumped: 1")
+    assert problems == []
