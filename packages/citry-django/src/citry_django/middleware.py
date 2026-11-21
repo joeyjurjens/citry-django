@@ -27,7 +27,7 @@ from .islands import PAGE_NONCE_STATE
 class PageNonceMiddleware(MiddlewareMixin):
     """Add `Vary: X-Citry-Page-Nonce`, and `no-store` when the header was used.
 
-    Only a response whose islands looked for the header is touched. Every
+    Only a response whose Citry output looked for the header is touched. Every
     such answer lists the header in `Vary`, so a cache keeps an answer
     written without a nonce apart from one written with it. One that used
     the nonce from the header also gets `Cache-Control: no-store`, as

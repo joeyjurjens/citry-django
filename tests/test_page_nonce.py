@@ -56,6 +56,10 @@ def test_a_page_with_an_island_makes_htmx_send_its_nonce(render_django, rf):
     assert "k.pageNonce()" in html
     script = html.split('<script nonce="pageNonce1234">(function(h)')[1].split("</script>")[0]
     assert "pageNonce1234" not in script
+    # htmx resolves the path against the base URL, so that must stay on the
+    # page's origin too, and the guard must ignore elements named like it.
+    assert "new URL(p,document.baseURI).origin===o" in script
+    assert 'hasOwnProperty.call(w,"__citryPageNonce")' in script
 
 
 def test_a_page_without_an_island_writes_none(render_django, rf):
@@ -70,7 +74,7 @@ def test_a_page_without_a_nonce_writes_none(render_django, rf):
 def test_several_islands_each_write_a_script_that_registers_once(render_django, rf):
     html = render_django("<c-nonce-live/><c-nonce-live/>", request=page(rf))
     # The guard is in the script, so repeats are harmless.
-    assert "window.__citryPageNonce)return" in html
+    assert '"__citryPageNonce"))return' in html
 
 
 def test_a_partial_writes_none_because_it_lands_in_a_page(render_django, rf):
@@ -137,6 +141,22 @@ def test_a_partial_that_looked_for_the_header_varies_on_it(render_django, rf):
     response = marked(request)
     assert PAGE_NONCE_HEADER in response["Vary"]
     assert not response.has_header("Cache-Control")
+
+
+def test_a_cache_policy_of_the_views_own_keeps_no_store(render_django, rf):
+    request = partial(rf, sent="olderTabNonce1")
+    render_django("<c-nonce-live/>", request=request)
+
+    def view(request):
+        response = HttpResponse("x")
+        response["Cache-Control"] = "public, max-age=600"
+        response["Vary"] = "HX-Request"
+        return response
+
+    response = PageNonceMiddleware(view)(request)
+    assert "no-store" in response["Cache-Control"]
+    assert "HX-Request" in response["Vary"]
+    assert PAGE_NONCE_HEADER in response["Vary"]
 
 
 def test_a_whole_page_is_left_alone(render_django, rf):

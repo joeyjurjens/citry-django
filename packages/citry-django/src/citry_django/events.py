@@ -57,7 +57,7 @@ SESSION_KEY = "citry_django_csp_nonce"
 
 
 def page_csp_nonce(event_request: Any) -> str | None:
-    """The nonce of the page a server event came from, as well as citry-django knows it.
+    """The nonce of the page a server event came from, or the closest one citry-django has.
 
     Pass it as Citry's `_csp_nonce` Events setting. In this order:
 

@@ -380,10 +380,9 @@ def test_server_events_pass_django_csrf_when_its_settings_are_not_the_defaults(
 @pytest.mark.django_db(transaction=True)
 @pytest.mark.usefixtures("events_site", "csp")
 def test_an_htmx_swap_in_an_older_tab_carries_that_tabs_nonce(live_server, browser_context):
-    """Two tabs of one visitor, each with its own nonce. The session keeps one
-    nonce, the last page's, so a swap in the first tab used to be written with
-    the second tab's nonce and the first tab's CSP refused it. The page sends
-    its own nonce with the request now."""
+    """Two tabs of one visitor, each with its own nonce. The session keeps
+    only the last page's nonce, so the page sends its own with each request,
+    and a swap in the first tab carries the first tab's nonce."""
     first = browser_context.new_page()
     problems, _ = watch(first)
     first.goto(f"{live_server.url}/swap/")

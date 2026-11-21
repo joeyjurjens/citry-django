@@ -2,11 +2,12 @@ from .assets import scripts, styles
 from .events import page_csp_nonce, render_inputs
 from .extension import CitryDjangoExtension
 from .foreign import ForeignNode
-from .islands import csrf_settings
+from .islands import CsrfSettingsWarning, csrf_settings
 from .partials import PartialResponseWarning
 
 __all__ = [
     "CitryDjangoExtension",
+    "CsrfSettingsWarning",
     "ForeignNode",
     "PartialResponseWarning",
     "csrf_settings",

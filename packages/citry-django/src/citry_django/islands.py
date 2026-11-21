@@ -305,13 +305,20 @@ def page_nonce_script(request: Any, csp_nonce: str | None) -> str:
     if not csp_nonce or is_partial(request) or not isinstance(request, HttpRequest):
         return ""
     # The runtime is asked at request time, not now: under the "document"
-    # strategy its tag comes later in the page than this script.
+    # strategy its tag comes later in the page than this script. htmx
+    # resolves a relative path against the document's base URL, which a
+    # `<base>` tag can move, so the path must land on the page's origin
+    # resolved both ways. The guard reads only the window's own property,
+    # which an element's `id` or `name` cannot set.
     body = (
-        "(function(h){if(window.__citryPageNonce)return;window.__citryPageNonce=1;"
+        "(function(h){var w=window;"
+        'if(Object.prototype.hasOwnProperty.call(w,"__citryPageNonce"))return;'
+        "w.__citryPageNonce=1;"
         'document.addEventListener("htmx:configRequest",function(e){'
-        "var k=window.Citry,n=k&&k.pageNonce&&k.pageNonce();if(!n)return;try{"
-        "var u=new URL(e.detail.path,location.href);"
-        "if(u.origin===location.origin)e.detail.headers[h]=n"
+        "var k=w.Citry,n=k&&k.pageNonce&&k.pageNonce();if(!n)return;try{"
+        "var o=location.origin,p=e.detail.path;"
+        "if(new URL(p,location.href).origin===o&&new URL(p,document.baseURI).origin===o)"
+        "e.detail.headers[h]=n"
         "}catch(x){}})})("
         f"{json_for_script(PAGE_NONCE_HEADER)});"
     )
@@ -339,8 +346,10 @@ def with_csrf(html: str, render: Any, request: Any, csp_nonce: str | None) -> st
     """
     if not render.needs_csrf_token():
         return html
-    app = get_citry_app()
-    refuse_unmapped_csrf_settings(app)
+    # The names Citry wrote into the block come from the render's own app,
+    # which a per-request `CITRY_APP` or a component from Python may make
+    # another one than the project default.
+    app = render.owner_citry or get_citry_app()
     ensure_csrf_cookie(request)
     return html + csrf_script(app, request, csp_nonce)
 
@@ -408,29 +417,37 @@ def csrf_settings() -> dict[str, str | None]:
     return names
 
 
-def refuse_unmapped_csrf_settings(app: Any) -> None:
-    """Raise when Django's CSRF names differ from Citry's and the app does not say so.
+class CsrfSettingsWarning(UserWarning):
+    """Django's CSRF names differ from Citry's, and the Citry app does not set them."""
 
-    Citry's browser code would then read the wrong cookie or send the wrong
+
+def unmapped_csrf_names(app: Any) -> dict[str, str]:
+    """Django's CSRF names that differ from Citry's defaults and the app does not set.
+
+    Citry's browser code would read the wrong cookie or send the wrong
     header, and every server event would fail Django's check with a 403, far
     from the cause. A name the app sets itself wins, whatever it is. A token
-    Django hides needs nothing here: `csrf_script` gives it to the browser.
+    Django hides is left out: `csrf_script` gives it to the browser anyway.
+    Keyed as `Citry.configure` names them: `cookie`, `header`.
     """
     events = app.settings.extensions_defaults.get("events", {})
-    missing = [
-        name for name, value in csrf_settings().items() if name not in events and value is not None
-    ]
-    if not missing:
-        return
-    names = " and ".join(f"'{name}'" for name in missing)
+    return {
+        name.removeprefix("_csrf_"): value
+        for name, value in csrf_settings().items()
+        if name not in events and value is not None
+    }
+
+
+def warn_unmapped(names: dict[str, str]) -> None:
+    keys = " and ".join(f"'_csrf_{name}'" for name in names)
     msg = (
-        f"Django's CSRF settings name another cookie or header than Citry's defaults, "
-        f"but the Citry app sets no {names} Events setting, so every server event would "
-        "fail Django's CSRF check. Build the app with "
+        "Django's CSRF settings name another cookie or header than Citry's defaults, and "
+        f"the Citry app sets no {keys} Events setting. citry-django tells the browser with "
+        "an extra script for now. Build the app with "
         'extensions_defaults={"events": {**csrf_settings(), ...}} '
-        "(from citry_django import csrf_settings)."
+        "(from citry_django import csrf_settings), so Citry writes them itself."
     )
-    raise ImproperlyConfigured(msg)
+    warnings.warn(msg, CsrfSettingsWarning, stacklevel=2)
 
 
 def csrf_script(app: Any, request: Any, csp_nonce: str | None) -> str:
@@ -447,6 +464,8 @@ def csrf_script(app: Any, request: Any, csp_nonce: str | None) -> str:
     - A partial without a nonce: on a page without one, Citry ignores the
       names in a fragment's block, because injected markup could have
       written them, so the script names them.
+    - Django's names differ from Citry's and the app does not set them (see
+      `unmapped_csrf_names`): the script names them, with a warning.
 
     The script calls `Citry.configure`, which needs the runtime, and the
     runtime's tag may come after this one or load later, as it does in a
@@ -468,6 +487,14 @@ def csrf_script(app: Any, request: Any, csp_nonce: str | None) -> str:
     # count, does the header need saying here too.
     if header is not None and (config or (is_partial(request) and not csp_nonce)):
         config["header"] = header
+    # A project that has not mapped Django's names into the app still works,
+    # through the script, and is told how to let Citry write them instead.
+    unmapped = unmapped_csrf_names(app)
+    if unmapped:
+        warn_unmapped(unmapped)
+        if "token" in config:
+            unmapped.pop("cookie", None)
+        config.update(unmapped)
     if not config:
         return ""
     payload = json_for_script({"csrf": config})

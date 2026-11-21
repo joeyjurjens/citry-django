@@ -594,7 +594,9 @@ Things to know:
   htmx snippet from Citry's docs ([Nonces in
   fragments](https://citry.dev/security/#html-fragments)), which sends
   `Citry.pageNonce()` in an `X-Citry-Page-Nonce` header with each request to
-  the page's own origin. The partial's islands use that nonce, read with
+  the page's own origin. It checks the URL against both the page's address
+  and its base URL, so a `<base>` tag cannot send the nonce to another site.
+  A `base-uri 'none'` or `'self'` directive in your policy helps too. The partial's islands use that nonce, read with
   Citry's `page_nonce_from_headers()`, so each tab gets its own. A request
   that is not htmx's can send the header itself. Without the header, a
   partial uses the nonce citry-django keeps in the session, if the app
@@ -613,14 +615,18 @@ Things to know:
   ]
   ```
 
-  It adds `Vary: X-Citry-Page-Nonce` to each partial whose islands looked
-  for the header, and `Cache-Control: no-store` when they used it, as
-  Citry does for its own event answers.
+  It adds `Vary: X-Citry-Page-Nonce` to each partial whose Citry output
+  looked for the header, and `Cache-Control: no-store` when it used it, as
+  Citry does for its own event answers. A view under `@cache_page` is
+  stored before any middleware sees the response, so do not cache a
+  partial view that holds an island, or add
+  `@vary_on_headers("X-Citry-Page-Nonce")` inside `@cache_page`.
 - If the app configures `i18n` and the page has no island of its own, the
   first fragment is discarded: the loader adds Citry's runtime but not its
   i18n plugin ("missing or incompatible Citry browser plugin: i18n"). Put
-  an island, or the runtime, on every page that swaps in fragments. This is
-  a Citry gap, and the browser test for it is a known failure.
+  an island on every page that swaps in fragments, so the page loads the
+  runtime and its plugins. Citry tracks this in
+  [citry#810](https://github.com/citry-dev/citry/issues/810).
 - A component without Vue in a partial gets its `<link>`, `<style>` and
   `<script>` tags in the partial itself, each written once.
 - With `DEBUG` on, a response written for a whole page that holds an island
@@ -1168,15 +1174,17 @@ It returns only what differs from Citry's defaults, so with Django's
 defaults it adds nothing. A key you write after the spread wins, such as
 `{**csrf_settings(), "_csrf_header": "X-Other"}`, and citry-django does not
 check it. When Django's cookie or header name differs from Citry's and the
-app sets neither setting, an island that needs the token raises
-`ImproperlyConfigured`, because every server event would fail Django's
-check with a 403.
+app does not set it, every server event would fail Django's check with a
+403. So an island that needs the token then writes a small script that
+names them (`Citry.configure({csrf: ...})`), and citry-django issues a
+`CsrfSettingsWarning` that tells you to use `csrf_settings()`.
 
 One more case writes the script: a partial response without a CSP nonce.
 On a page without a nonce, Citry ignores the names in a fragment's block,
 because markup injected into the page could have written them, so the
-script names them instead. The script carries the page's CSP nonce, and it
-waits up to five seconds for Citry's runtime, which a fragment loads later.
+script names them instead. Each of these scripts carries the page's CSP
+nonce when there is one, and waits up to five seconds for Citry's
+runtime, which a fragment loads later.
 
 ### HTML a server event sends back needs the page's CSP nonce
 

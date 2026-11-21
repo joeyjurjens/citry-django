@@ -16,11 +16,10 @@ import json
 import re
 
 import pytest
-from django.core.exceptions import ImproperlyConfigured
 from django.http import HttpResponse
 from django.middleware.csrf import CsrfViewMiddleware
 
-from citry_django import csrf_settings
+from citry_django import CsrfSettingsWarning, csrf_settings
 
 
 @pytest.fixture(autouse=True)
@@ -167,13 +166,31 @@ def test_renamed_names_reach_the_configuration_block_without_a_script(
     assert configured(html) is None
 
 
-def test_renamed_names_the_app_does_not_set_are_refused(render_django, rf, settings, app_events):
+def test_renamed_names_the_app_does_not_set_go_in_a_script_with_a_warning(
+    render_django, rf, settings, app_events
+):
     """Citry's browser code would read the wrong cookie, and every server
     event would fail Django's check with a 403."""
+    settings.CSRF_COOKIE_NAME = "mytoken"
     settings.CSRF_HEADER_NAME = "HTTP_X_MY_CSRF"
     app_events({})
-    with pytest.raises(ImproperlyConfigured, match="'_csrf_header'"):
-        render_django("<c-csrf-live/>", request=rf.get("/"))
+    with pytest.warns(CsrfSettingsWarning, match="'_csrf_cookie' and '_csrf_header'"):
+        html = render_django("<c-csrf-live/>", request=rf.get("/"))
+    assert configured(html) == {"csrf": {"cookie": "mytoken", "header": "X-MY-CSRF"}}
+
+
+def test_a_hidden_token_the_app_does_not_map_still_gets_its_header(
+    render_django, rf, settings, app_events
+):
+    settings.CSRF_COOKIE_HTTPONLY = True
+    settings.CSRF_HEADER_NAME = "HTTP_X_MY_CSRF"
+    app_events({})
+    with pytest.warns(CsrfSettingsWarning, match="'_csrf_header'"):
+        config = configured(render_django("<c-csrf-live/>", request=rf.get("/")))
+    assert config is not None
+    assert config["csrf"]["header"] == "X-MY-CSRF"
+    assert config["csrf"]["token"]
+    assert "cookie" not in config["csrf"]
 
 
 def test_names_the_app_sets_itself_win(render_django, rf, settings, app_events):
@@ -183,10 +200,14 @@ def test_names_the_app_sets_itself_win(render_django, rf, settings, app_events):
     assert block_names(html) == {"cookie": "theirs"}
 
 
-def test_an_island_without_events_is_not_refused(render_django, rf, settings, app_events):
+def test_an_island_without_events_writes_no_script_and_no_warning(
+    render_django, rf, settings, app_events, recwarn
+):
     settings.CSRF_HEADER_NAME = "HTTP_X_MY_CSRF"
     app_events({})
-    assert "citry-vue-" in render_django("<c-csrf-quiet/>", request=rf.get("/"))
+    html = render_django("<c-csrf-quiet/>", request=rf.get("/"))
+    assert configured(html) is None
+    assert not [w for w in recwarn if w.category is CsrfSettingsWarning]
 
 
 def test_a_cookie_a_script_cannot_read_gives_the_runtime_the_token(
@@ -237,6 +258,16 @@ def test_a_partial_without_a_nonce_names_them_in_a_script(render_django, rf, set
     app_events(csrf_settings())
     html = render_django("<c-csrf-live/>", request=partial(rf))
     assert configured(html) == {"csrf": {"cookie": "mytoken", "header": "X-MY-CSRF"}}
+
+
+def test_a_partial_with_a_hidden_token_gets_the_token(render_django, rf, settings, app_events):
+    settings.CSRF_USE_SESSIONS = True
+    app_events(csrf_settings())
+    request = partial(rf, nonce="ownNonce12345")
+    request.session = {}
+    config = configured(render_django("<c-csrf-live/>", request=request))
+    assert config is not None
+    assert config["csrf"]["token"]
 
 
 def test_a_partial_with_a_nonce_needs_no_script(render_django, rf, settings, app_events):
