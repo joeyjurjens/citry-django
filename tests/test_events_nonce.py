@@ -65,7 +65,7 @@ def test_a_page_with_an_island_keeps_its_nonce(monkeypatch, settings, rf, render
     render_django("<c-live/>", request=request)
 
     assert request.session[SESSION_KEY] == "pageNonce"
-    assert page_csp_nonce(SimpleNamespace(native=request)) == "pageNonce"
+    assert page_csp_nonce(SimpleNamespace(native=request, headers={})) == "pageNonce"
 
 
 def test_an_island_in_a_django_block_keeps_it_too(monkeypatch, settings, rf):
@@ -96,7 +96,7 @@ def test_nothing_is_kept_unless_the_app_asks(monkeypatch, settings, rf, render_d
 @pytest.mark.parametrize("session", [None, {}, {SESSION_KEY: 42}])
 def test_no_kept_nonce_reads_as_none(session):
     native = SimpleNamespace() if session is None else SimpleNamespace(session=session)
-    assert page_csp_nonce(SimpleNamespace(native=native)) is None
+    assert page_csp_nonce(SimpleNamespace(native=native, headers={})) is None
 
 
 def test_citry_accepts_it_as_the_events_setting():

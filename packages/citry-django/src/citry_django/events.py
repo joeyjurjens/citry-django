@@ -26,20 +26,23 @@ from.
 A server event can answer with HTML that Citry serializes itself, which a
 client of the app's own, such as htmx, inserts into the page. Under a
 nonce-based Content Security Policy that HTML has to carry the nonce of the
-page it lands in, and the event request does not know that page's nonce: it
-is a separate request. So citry-django keeps the nonce in the session when it
-renders a page that holds an island, and gives it back to Citry through
-Citry's `_csp_nonce` Events setting, as in the example above.
+page it lands in, and the event request is a separate request. When the
+client sends the page's nonce in the `X-Citry-Page-Nonce` header (from
+`Citry.pageNonce()` in the browser), Citry reads it itself and needs no
+setting. For a client that cannot, citry-django can keep the nonce in the
+session when it renders a page that holds an island, and give it back to
+Citry through Citry's `_csp_nonce` Events setting, as in the example above.
 
 The session keeps the nonce of the last such page each visitor loaded. A
-partial response, such as an htmx swap, lands in that page too, so its
-islands carry the same nonce (see `partial_csp_nonce`).
+partial response, such as an htmx swap, that sends no header lands in that
+page too, so its islands carry the same nonce (see `partial_csp_nonce`).
 """
 
 from __future__ import annotations
 
 from typing import Any
 
+from citry import page_nonce_from_headers
 from citry.ext.events import EventRequest, RenderInputs
 from django.http import HttpRequest
 
@@ -54,12 +57,23 @@ SESSION_KEY = "citry_django_csp_nonce"
 
 
 def page_csp_nonce(event_request: Any) -> str | None:
-    """The nonce of the last page with an island this visitor loaded.
+    """The nonce of the page a server event came from, or the closest one citry-django has.
 
-    Pass it as Citry's `_csp_nonce` Events setting. Returns None when the
-    request has no session or the visitor loaded no such page, which Citry
-    reads as a page without a nonce.
+    Pass it as Citry's `_csp_nonce` Events setting. In this order:
+
+    1. The nonce the page sent in the `X-Citry-Page-Nonce` header, read with
+       Citry's `page_nonce_from_headers()`. Citry reads the header itself
+       when no `_csp_nonce` is set, but once one is set it asks only the
+       function, so this one reads the header first.
+    2. The nonce of the last page with an island this visitor loaded, kept
+       in the session. With several tabs open it may be another tab's.
+
+    Returns None when neither is there, which Citry reads as a page without
+    a nonce.
     """
+    sent = page_nonce_from_headers(event_request.headers)
+    if sent is not None:
+        return sent
     session = getattr(event_request.native, "session", None)
     if session is None:
         return None

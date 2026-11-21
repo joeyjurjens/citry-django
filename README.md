@@ -340,14 +340,6 @@ them. So put Django content that must stay after a server event into a
 component's template, and render that component inside the one the
 handler returns.
 
-One case does not work yet. Inside a Django block, an element with a
-`{{ }}` in an attribute value and a Citry `{{ }}` in its text, such as
-`{% if %}<p title="{{ note }}">{{ note }}</p>{% endif %}`, renders on the
-page, but a server event that renders it again fails, because Citry
-refuses it there. Until Citry accepts it, write the text value as an
-expression Django renders, for example `{{ note|escape }}` or
-`{{ item.note }}`.
-
 ## Writing an input
 
 ### `c-x` is Python, a plain attribute is Django
@@ -598,13 +590,48 @@ Things to know:
   the other.
 - Under a nonce-based Content Security Policy, the partial's islands must
   carry the nonce of the page they land in, not the nonce of the partial's
-  own response. citry-django uses the nonce it keeps for server events; see
-  [HTML a server event sends back needs the page's CSP
-  nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce). It
-  starts keeping a visitor's nonce on the first page that holds an island,
-  and from then on every whole page the visitor loads replaces it. A
-  partial for a visitor who has not loaded such a page carries its own
-  response's nonce, and the browser refuses to start it.
+  own response. A page that holds an island and has a nonce writes the
+  htmx snippet from Citry's docs ([Nonces in
+  fragments](https://citry.dev/security/#html-fragments)), which sends
+  `Citry.pageNonce()` in an `X-Citry-Page-Nonce` header with each request to
+  the page's own origin. It checks the URL against both the page's address
+  and its base URL, so a `<base>` tag cannot send the nonce to another site.
+  A `base-uri 'none'` or `'self'` directive in your policy helps too. A
+  URL on your site that redirects to an address taken from the request
+  passes the header on to another site. Django's own redirect helpers
+  check the host (`url_has_allowed_host_and_scheme`), so use them. To keep
+  the header to the URLs that answer with fragments, set
+  [`CITRY_PAGE_NONCE_PATHS`](#citry_page_nonce_paths). The partial's islands use that nonce, read with
+  Citry's `page_nonce_from_headers()`, so each tab gets its own. A request
+  that is not htmx's can send the header itself. Without the header, a
+  partial uses the nonce citry-django keeps in the session, if the app
+  asked for that (see [HTML a server event sends back needs the page's CSP
+  nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce)). With
+  neither, it carries its own response's nonce, and the browser refuses to
+  start it. A page without an island writes no snippet, so the first
+  partial it loads gets no header.
+- A partial's HTML then depends on a header the request chose, so a shared
+  cache must not hand it to anyone else. Add `PageNonceMiddleware`:
+
+  ```python
+  MIDDLEWARE = [
+      ...,
+      "citry_django.middleware.PageNonceMiddleware",
+  ]
+  ```
+
+  It adds `Vary: X-Citry-Page-Nonce` to each partial whose Citry output
+  looked for the header, and `Cache-Control: no-store` when it used it, as
+  Citry does for its own event answers. A view under `@cache_page` is
+  stored before any middleware sees the response, so do not cache a
+  partial view that holds an island, or add
+  `@vary_on_headers("X-Citry-Page-Nonce")` inside `@cache_page`.
+- If the app configures `i18n` and the page has no island of its own, the
+  first fragment is discarded: the loader adds Citry's runtime but not its
+  i18n plugin ("missing or incompatible Citry browser plugin: i18n"). Put
+  an island on every page that swaps in fragments, so the page loads the
+  runtime and its plugins. Citry tracks this in
+  [citry#810](https://github.com/citry-dev/citry/issues/810).
 - A component without Vue in a partial gets its `<link>`, `<style>` and
   `<script>` tags in the partial itself, each written once.
 - With `DEBUG` on, a response written for a whole page that holds an island
@@ -881,6 +908,7 @@ needs to say otherwise.
 | [`CITRY_DEPS_STRATEGY`](#citry_deps_strategy) | `"document"` |
 | [`CITRY_COLLECT_PAGE_ASSETS`](#citry_collect_page_assets) | `True` |
 | [`CITRY_COMPRESSOR_FILE_TYPES`](#citry_compressor_file_types) | `{}` |
+| [`CITRY_PAGE_NONCE_PATHS`](#citry_page_nonce_paths) | `None` |
 
 #### `CITRY_APP`
 
@@ -937,6 +965,22 @@ Only read when citry-django-compressor is installed.
 That extension takes one option of its own, `sort`, which decides the order
 inside a bundle. On by default, so the same set of components is the same file
 wherever they sit on the page.
+
+#### `CITRY_PAGE_NONCE_PATHS`
+
+The URL path prefixes that htmx sends the page's CSP nonce to, in the
+`X-Citry-Page-Nonce` header (see [partial
+responses](#partial-responses-htmx-and-template-partials)). `None`, the
+default, sends it to every path on the page's own origin:
+
+```python
+CITRY_PAGE_NONCE_PATHS = ["/cards/", "/partials/"]
+```
+
+A prefix matches the start of the URL path, so `"/cards/"` covers
+`/cards/42`. Each prefix must start with `/`; another value raises
+`ImproperlyConfigured` when a page writes the snippet. A partial whose
+request does not send the header falls back as described there.
 
 ## Limits
 
@@ -1114,21 +1158,54 @@ Django syntax at all.
 
 Citry's server events (`Events`) pass Django's own CSRF check: the browser
 reads the `csrftoken` cookie and sends it back in the `X-CSRFToken` header.
-A page that holds a component that needs Vue asks Django for the token, as
-`{% csrf_token %}` does, so Django sets the cookie even on a page without a
-form. With Django's default settings the token is not written into the page.
+A page asks Django for the token, as `{% csrf_token %}` does, when Citry's
+`needs_csrf_token()` says one of its islands may send it: a component with
+server events, or a `<c-i18n client>` provider that loads another locale's
+messages. Django then sets the cookie even on a page without a form. A page
+whose islands need no token does not ask, so it stays cacheable. With
+Django's default settings the token is not written into the page.
 
-Citry's browser runtime reads Django's default names. When a project changes
-them, citry-django writes a small script after each island that tells the
-runtime (`Citry.configure({csrf: ...})`), so server events keep working:
+When a project changes Django's CSRF settings, give them to Citry when you
+build the app, with `csrf_settings()`:
 
-- A custom `CSRF_COOKIE_NAME` or `CSRF_HEADER_NAME`: the script names them.
-- `CSRF_USE_SESSIONS` or `CSRF_COOKIE_HTTPONLY`: no script can read the
-  token from a cookie, so the script carries the token itself. It is the
-  same masked token `{% csrf_token %}` writes into a form. A page that Django
-  caches for several visitors must not hold it, as with a form.
+```python
+from citry_django import CitryDjangoExtension, csrf_settings
 
-The script carries the page's CSP nonce. It waits up to five seconds for the
+app = Citry(
+    extensions=[CitryDjangoExtension()],
+    extensions_defaults={"events": {**csrf_settings()}},
+)
+```
+
+It maps Django's settings to Citry's `_csrf_cookie` and `_csrf_header`
+Events settings ([CSRF cookie and
+header](https://citry.dev/security/#csrf-names)), which Citry writes into
+each island's configuration block for its browser code:
+
+- `CSRF_COOKIE_NAME` becomes `_csrf_cookie`.
+- `CSRF_HEADER_NAME`, which Django writes as a `request.META` key such as
+  `HTTP_X_MY_CSRF`, becomes the header name `X-MY-CSRF`.
+- `CSRF_USE_SESSIONS` or `CSRF_COOKIE_HTTPONLY` makes `_csrf_cookie`
+  `None`: no script can read the token from a cookie. Each island that needs
+  the token then writes a small script that gives it to Citry
+  (`Citry.configure({csrf: {token}})`). It is the same masked token
+  `{% csrf_token %}` writes into a form, so a page that Django caches for
+  several visitors must not hold it, as with a form.
+
+It returns only what differs from Citry's defaults, so with Django's
+defaults it adds nothing. A key you write after the spread wins, such as
+`{**csrf_settings(), "_csrf_header": "X-Other"}`, and citry-django does not
+check it. When Django's cookie or header name differs from Citry's and the
+app does not set it, every server event would fail Django's check with a
+403. So an island that needs the token then writes a small script that
+names them (`Citry.configure({csrf: ...})`), and citry-django issues a
+`CsrfSettingsWarning` that tells you to use `csrf_settings()`.
+
+One more case writes the script: a partial response without a CSP nonce.
+On a page without a nonce, Citry ignores the names in a fragment's block,
+because markup injected into the page could have written them, so the
+script names them instead. Each of these scripts carries the page's CSP
+nonce when there is one, and waits up to five seconds for Citry's
 runtime, which a fragment loads later.
 
 ### HTML a server event sends back needs the page's CSP nonce
@@ -1141,9 +1218,15 @@ from the template context (`csp_nonce` or `CSP_NONCE`), from django-csp's
 Citry's browser runtime applies a server event's update to the app already
 on the page and needs nothing more. A handler whose HTML answer is inserted
 into the page by a client of your own, such as htmx, needs the nonce of the
-page that sent the call, which the event request does not have. So does a
-[partial response](#partial-responses-htmx-and-template-partials) that holds
-an island. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events setting:
+page that sent the call, which the event request does not have. When the
+client sends it in the `X-Citry-Page-Nonce` header, as the snippet a page
+with an island writes makes htmx do, Citry reads it itself, and you need no
+setting. Citry lists the header in `Vary` on every event answer, and
+answers a call that sent it with `Cache-Control: no-store`.
+
+For a client that cannot send the header, citry-django can keep each page's
+nonce in the session. Pass `page_csp_nonce` as Citry's `_csp_nonce` Events
+setting:
 
 ```python
 from citry_django import CitryDjangoExtension, page_csp_nonce
@@ -1154,16 +1237,19 @@ app = Citry(
 )
 ```
 
-With it set, citry-django keeps the nonce in the session when it renders a
-page that holds a component that needs Vue, and `page_csp_nonce` gives it
-back. Pass the function itself: citry-django keeps the nonce only when the
-setting is `page_csp_nonce`. It needs Django's session middleware, and it
-saves the session on every such page view, creating one for a visitor who
-had none. Once a visitor has a kept nonce, every whole page they load
-replaces it, with or without an island, and saves the session too. The
-session keeps the nonce of the last page a visitor loaded, so HTML for a
-page in another tab carries the wrong nonce, and the browser refuses to
-start it.
+`page_csp_nonce` uses the `X-Citry-Page-Nonce` header when the call sent
+one, because Citry reads only the function once it is set. Otherwise it
+gives back the nonce citry-django kept in the session when it rendered a
+page that holds a component that needs Vue. Pass the function itself:
+citry-django keeps the nonce only when the setting is `page_csp_nonce`. It
+needs Django's session middleware, and it saves the session on every such
+page view, creating one for a visitor who had none. Once a visitor has a
+kept nonce, every whole page they load replaces it, with or without an
+island, and saves the session too. The session keeps the nonce of the last
+page a visitor loaded, so with several tabs open, a call without the header
+from an older tab gets the newer tab's nonce, and the browser refuses to
+start the HTML. A [partial response](#partial-responses-htmx-and-template-partials)
+without the header uses the kept nonce in the same way.
 
 ### Injection safety
 

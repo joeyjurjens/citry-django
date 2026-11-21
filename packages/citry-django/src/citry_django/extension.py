@@ -11,7 +11,7 @@ from .context import CONTEXT_BEHAVIORS, ContextBehavior
 from .engine import django_lexer, get_django_engine
 from .events import remember_page_nonce
 from .expressions import is_django_expression
-from .islands import ensure_csrf_cookie, settle_root
+from .islands import settle_root
 from .registry import get_tokenizer
 from .spans import PROVIDER, BodyCompiler, TemplateScan
 
@@ -64,7 +64,6 @@ class CitryDjangoExtension(Extension):
         options = settle_root(ctx.component, ctx.render)
         if options is not None:
             # What a region does for the islands it holds.
-            ensure_csrf_cookie(options.request)
             remember_page_nonce(ctx.citry, options.request, options.csp_nonce)
 
     def on_template_foreign_spans(self, ctx: Any) -> ForeignSpanSet | None:
