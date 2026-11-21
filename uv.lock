@@ -233,7 +233,7 @@ wheels = [
 
 [[package]]
 name = "citry"
-version = "1.1.0"
+version = "1.2.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "citry-core" },
@@ -242,9 +242,9 @@ dependencies = [
     { name = "tzdata" },
     { name = "wrapt" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/30/af/a0a18810279b31ed4d314c46a369bc0fac84a46c26fd253cc1ee12f3964c/citry-1.1.0.tar.gz", hash = "sha256:96cea4c71112be265b2041593f1328a5135243cf2b1eb72c263da002d066a2d6", size = 3408600 }
+sdist = { url = "https://files.pythonhosted.org/packages/15/05/8d9644c68317d3e2a87f5ba565bce8a3c7763c716d14b63879188ac17708/citry-1.2.0.tar.gz", hash = "sha256:a6eed7ec4b60382f2bb59466998325fd30d440d0d1da8723382df110c6e57f71", size = 3423636 }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/0f/db/f2bdd32f0f8565b947d0be9ccb5954b95f427b96e7f1a803deeace60b341/citry-1.1.0-py3-none-any.whl", hash = "sha256:e3ffd07816b2c50337c35e149069b544bdf443b3d435cbf67c1e6b7f1529047c", size = 1761666 },
+    { url = "https://files.pythonhosted.org/packages/57/b8/7d92d49a0eee98040be0d750d0a711f527671691e7c660c4113e4716f45d/citry-1.2.0-py3-none-any.whl", hash = "sha256:50800a4f93f69c1b843d5a438bee8b58daf4804d2ab35fb104b3b0977a70c51b", size = 1768711 },
 ]
 
 [[package]]
@@ -320,7 +320,7 @@ django-components = [
 
 [package.metadata]
 requires-dist = [
-    { name = "citry", specifier = ">=1.1.0,<2" },
+    { name = "citry", specifier = ">=1.2.0,<2" },
     { name = "citry-django-compressor", marker = "extra == 'compressor'", editable = "packages/citry-django-compressor" },
     { name = "citry-django-djc", marker = "extra == 'django-components'", editable = "packages/citry-django-djc" },
     { name = "django", specifier = ">=5.2" },
