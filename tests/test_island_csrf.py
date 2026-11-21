@@ -1,7 +1,9 @@
-"""A page that holds an island makes Django send the CSRF cookie.
+"""A page that holds an island with server events makes Django send the CSRF cookie.
 
 Citry's Events calls pass Django's own CSRF check, which needs the cookie,
-and a page without a form never asks Django for it.
+and a page without a form never asks Django for it. An island without server
+events never makes such a call, so it leaves the cookie, and the page's
+cacheability, alone.
 """
 
 from __future__ import annotations
@@ -12,14 +14,37 @@ from django.middleware.csrf import CsrfViewMiddleware
 
 
 @pytest.fixture(autouse=True)
-def fixtures(component):
+def fixtures(component, citry_app):
+    # Components with server events need Citry's routes mounted.
+    previous = citry_app.mounted_prefix
+    citry_app.set_mounted_prefix("/citry")
+    yield from _define(component)
+    citry_app._mounted_prefix = previous
+
+
+def _define(component):
+    class Events:
+        def go(self):
+            return None
+
     component(
-        "<b>live</b>",
+        '<b @c-click="go">live</b>',
         name="csrf-live",
         js_data=lambda self, kwargs, slots: {"on": True},
+        Events=Events,
+    )
+    # Needs Vue, has no server events.
+    component(
+        '<b @click="n++">quiet</b>',
+        name="csrf-quiet",
+        js_data=lambda self, kwargs, slots: {"n": 0},
+    )
+    component(
+        "<ul>{% for n in ns %}<li><c-csrf-quiet/></li>{% endfor %}</ul>", name="csrf-quiet-loop"
     )
     component("<i>still</i>", name="csrf-still")
     component("<ul>{% for n in ns %}<li><c-csrf-live/></li>{% endfor %}</ul>", name="csrf-loop")
+    yield
 
 
 def cookie_sent(request, html: str) -> bool:
@@ -110,3 +135,39 @@ def test_an_island_in_a_django_block_gets_it_too(render, rf, settings):
 def test_a_static_region_gets_none(render_django, rf, settings):
     settings.CSRF_COOKIE_NAME = "mytoken"
     assert configured(render_django("<c-csrf-still/>", request=rf.get("/"))) is None
+
+
+def test_an_island_without_server_events_does_not_ask(render_django, rf):
+    request = rf.get("/")
+    html = render_django("<c-csrf-quiet/>", request=request)
+    assert "citry-vue-" in html
+    assert not cookie_sent(request, html)
+
+
+def test_an_island_without_server_events_in_a_django_block_does_not_ask(render, rf):
+    request = rf.get("/")
+    html = render("<c-csrf-quiet-loop c-ns='[1]'/>", request=request)
+    assert "citry-vue-" in html
+    assert not cookie_sent(request, html)
+
+
+def test_one_island_with_events_among_others_asks(render_django, rf):
+    request = rf.get("/")
+    html = render_django("<c-csrf-quiet/><c-csrf-live/>", request=request)
+    assert cookie_sent(request, html)
+
+
+def test_an_island_without_events_gets_no_csrf_script(render_django, rf, settings):
+    settings.CSRF_COOKIE_NAME = "mytoken"
+    assert configured(render_django("<c-csrf-quiet/>", request=rf.get("/"))) is None
+
+
+def test_an_island_citry_does_not_describe_still_asks():
+    """No data block, or a protocol this does not know: ask, as before."""
+    from citry_django.islands import holds_server_events
+
+    assert holds_server_events("<div>no data block</div>")
+    unknown = '<script type="application/json">{"protocol":"citry-vue-prepared/2"}</script>'
+    assert holds_server_events(unknown)
+    known = '<script type="application/json">{"protocol":"citry-vue-prepared/1"}</script>'
+    assert not holds_server_events(known)

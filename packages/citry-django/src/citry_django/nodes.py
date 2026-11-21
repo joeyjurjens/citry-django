@@ -28,7 +28,6 @@ from .islands import (
     ISLANDS_PROVIDE,
     IslandOptions,
     PendingIslands,
-    ensure_csrf_cookie,
     island_csp_nonce,
     refuse_misplaced_islands,
     request_csp_nonce,
@@ -459,9 +458,7 @@ class CitryFragment(template.Node):
         )
         refuse_misplaced_islands(html, open_elements=self.open_elements, origin=self.citry_origin)
         if island or inner_islands:
-            # An island may hold Events, whose calls need the CSRF cookie and,
-            # for HTML a call answers with, this page's nonce.
-            ensure_csrf_cookie(request)
+            # An island may hold Events, whose HTML answers need this page's nonce.
             remember_page_nonce(app, request, nonce)
         return mark_safe(html)
 

@@ -60,6 +60,13 @@ def page_csp_nonce(event_request: Any) -> str | None:
     request has no session or the visitor loaded no such page, which Citry
     reads as a page without a nonce.
     """
+    # A client that sends the page's nonce with the call (see
+    # `islands.page_nonce_script`) is right even with several tabs open.
+    from .islands import sent_page_nonce
+
+    sent = sent_page_nonce(event_request.native)
+    if sent is not None:
+        return sent
     session = getattr(event_request.native, "session", None)
     if session is None:
         return None

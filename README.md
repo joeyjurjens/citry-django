@@ -340,14 +340,6 @@ them. So put Django content that must stay after a server event into a
 component's template, and render that component inside the one the
 handler returns.
 
-One case does not work yet. Inside a Django block, an element with a
-`{{ }}` in an attribute value and a Citry `{{ }}` in its text, such as
-`{% if %}<p title="{{ note }}">{{ note }}</p>{% endif %}`, renders on the
-page, but a server event that renders it again fails, because Citry
-refuses it there. Until Citry accepts it, write the text value as an
-expression Django renders, for example `{{ note|escape }}` or
-`{{ item.note }}`.
-
 ## Writing an input
 
 ### `c-x` is Python, a plain attribute is Django
@@ -598,13 +590,21 @@ Things to know:
   the other.
 - Under a nonce-based Content Security Policy, the partial's islands must
   carry the nonce of the page they land in, not the nonce of the partial's
-  own response. citry-django uses the nonce it keeps for server events; see
-  [HTML a server event sends back needs the page's CSP
-  nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce). It
-  starts keeping a visitor's nonce on the first page that holds an island,
-  and from then on every whole page the visitor loads replaces it. A
-  partial for a visitor who has not loaded such a page carries its own
-  response's nonce, and the browser refuses to start it.
+  own response. A page that holds an island and has a nonce writes a small
+  script that makes htmx send that nonce with each request to the page's
+  own origin, in an `X-Citry-Page-Nonce` header, and the partial's islands
+  use it. That is right with several tabs open. A request that is not
+  htmx's can send the header itself. A partial whose page held no island
+  has no such header, and falls back to the nonce citry-django keeps for
+  server events; see [HTML a server event sends back needs the page's CSP
+  nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce). With
+  neither, the partial carries its own response's nonce, and the browser
+  refuses to start it.
+- If the app configures `i18n` and the page has no island of its own, the
+  first fragment is discarded: the loader adds Citry's runtime but not its
+  i18n plugin ("missing or incompatible Citry browser plugin: i18n"). Put
+  an island, or the runtime, on every page that swaps in fragments. This is
+  a Citry gap, and the browser test for it is a known failure.
 - A component without Vue in a partial gets its `<link>`, `<style>` and
   `<script>` tags in the partial itself, each written once.
 - With `DEBUG` on, a response written for a whole page that holds an island
@@ -1114,9 +1114,11 @@ Django syntax at all.
 
 Citry's server events (`Events`) pass Django's own CSRF check: the browser
 reads the `csrftoken` cookie and sends it back in the `X-CSRFToken` header.
-A page that holds a component that needs Vue asks Django for the token, as
-`{% csrf_token %}` does, so Django sets the cookie even on a page without a
-form. With Django's default settings the token is not written into the page.
+A page that holds a component with server events asks Django for the token,
+as `{% csrf_token %}` does, so Django sets the cookie even on a page without a
+form. A page whose islands have no server events does not, so it stays
+cacheable. citry-django reads that from the island's configuration block, and
+asks whenever it cannot tell. With Django's default settings the token is not written into the page.
 
 Citry's browser runtime reads Django's default names. When a project changes
 them, citry-django writes a small script after each island that tells the
@@ -1163,7 +1165,9 @@ had none. Once a visitor has a kept nonce, every whole page they load
 replaces it, with or without an island, and saves the session too. The
 session keeps the nonce of the last page a visitor loaded, so HTML for a
 page in another tab carries the wrong nonce, and the browser refuses to
-start it.
+start it. A call that sends the page's nonce in an `X-Citry-Page-Nonce`
+header, as htmx does on a page with an island, is answered with that nonce
+instead, so tabs do not matter. Send it from your own `fetch()` the same way.
 
 ### Injection safety
 

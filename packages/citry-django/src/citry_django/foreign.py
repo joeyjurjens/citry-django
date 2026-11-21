@@ -29,7 +29,6 @@ from .engine import explain_tokenizer_disagreement, get_django_engine
 from .events import remember_page_nonce
 from .expressions import is_dotted_path
 from .islands import (
-    ensure_csrf_cookie,
     island_options,
     pending_for_root,
     serialize_island,
@@ -169,7 +168,6 @@ class _BlockState:
         )
         if island is None:  # pragma: no cover - only renders that need Vue come here
             return rendered
-        ensure_csrf_cookie(self.options.request)
         # A component root always has its component on the context.
         app = rendered.context.component.citry
         remember_page_nonce(app, self.options.request, self.options.csp_nonce)
