@@ -1,20 +1,21 @@
 # citry-django
 
-Use [Citry](https://github.com/citry-dev/citry) components in a Django project
-without giving up Django's template system, and without learning a dialect.
+citry-django lets you use [Citry](https://github.com/citry-dev/citry)
+components in a Django project. Django's template system stays as it is, and
+there is no new template dialect to learn.
 
 Any `{% tag %}` you can `{% load %}` works inside a Citry component, including
 tags from packages like Wagtail, crispy-forms and django-compressor. Citry
 components work in the Django templates you already have. Neither syntax
-changes, so you can migrate one region at a time.
+changes, so you can migrate one `<c-*>` element at a time.
 
 ## Contents
 
 - [Requirements](#requirements)
 - [Install](#install)
-- [How the two engines meet](#how-the-two-engines-meet)
-- [Writing an input](#writing-an-input)
-- [What a component can read](#what-a-component-can-read)
+- [Using Django and Citry together](#using-django-and-citry-together)
+- [Writing component inputs](#writing-component-inputs)
+- [Choosing what components read](#choosing-what-components-read)
 - [Assets](#assets)
 - [Settings](#settings)
 - [Limits](#limits)
@@ -28,16 +29,16 @@ changes, so you can migrate one region at a time.
 | Django | 5.2 LTS, 6.0, 6.1 |
 | Citry | 1.1.0 or later, below 2 |
 
-The suite runs against the newest Citry, currently 1.1.0.
+The test suite runs against the newest Citry, currently 1.1.0.
 
 ## Install
+
+Install the package, point Django's template backend at it, and tell it where
+your Citry instance lives:
 
 ```bash
 pip install citry-django
 ```
-
-Point Django's template backend at `citry-django` and tell it where your Citry
-instance lives:
 
 ```python
 # settings.py
@@ -45,7 +46,8 @@ CITRY_APP = "myproject.citry_app:app"
 
 TEMPLATES = [
     {
-        "BACKEND": "citry_django.backend.CitryTemplates",  # was DjangoTemplates
+        # Replaces the DjangoTemplates backend.
+        "BACKEND": "citry_django.backend.CitryTemplates",
         "DIRS": [...],
         "APP_DIRS": True,
         "OPTIONS": {"context_processors": [...]},
@@ -61,30 +63,31 @@ from citry_django import CitryDjangoExtension
 app = Citry(extensions=[CitryDjangoExtension()])
 ```
 
-That is the whole setup. There is no app to add to `INSTALLED_APPS`: the backend
-registers its tag itself.
+That is the whole setup. You do not add anything to `INSTALLED_APPS`; the
+backend registers its tag itself.
 
-Your existing templates are unaffected: one with no Citry syntax in it renders
+Your existing templates keep working. A template with no Citry syntax renders
 exactly as before, and `{% extends %}`, `{% block %}` and every tag you already
-use keep working. Loaders you configure yourself are kept as well, so a package
-that ships one of its own still works.
+use work as they did. Loaders you configure yourself are kept too, so a package
+that ships its own loader still works.
 
 ### Optional packages
 
 | Package | What it adds |
 |---|---|
-| [citry-django-compressor](packages/citry-django-compressor) | Each component's CSS and JS through django-compressor: precompiled, minified, and one file for a whole response. |
-| [citry-django-djc](packages/citry-django-djc) | Django's syntax read the way django-components reads it, for a project migrating off it. |
+| [citry-django-compressor](packages/citry-django-compressor) | Runs each component's CSS and JS through django-compressor: precompiled, minified, and combined into one file per response. |
+| [citry-django-djc](packages/citry-django-djc) | Reads Django's template syntax the way django-components does, for a project migrating off django-components. |
 
 ```bash
 pip install citry-django[compressor]
 pip install citry-django[django-components]
 ```
 
-### Reading django-components' syntax
+### Using django-components
 
-If your project uses [django-components](https://github.com/django-components/django-components),
-install the extra and hand its tokenizer to the extension:
+If your project uses
+[django-components](https://github.com/django-components/django-components),
+install the extra and pass its tokenizer to the extension:
 
 ```bash
 pip install citry-django[django-components]
@@ -97,16 +100,23 @@ from citry_django_djc import tokenize
 app = Citry(extensions=[CitryDjangoExtension(tokenizer=tokenize)])
 ```
 
-django-components compiles templates with its own tokenizer, which reads a `%}`
-inside a quoted argument where Django's lexer ends the tag. Handing the tokenizer
-to the extension ensures both halves agree on where that tag ends.
+django-components compiles templates with its own tokenizer. It reads a `%}`
+inside a quoted argument as part of the argument, where Django's lexer ends the
+tag there. Passing the tokenizer to the extension makes the extension and
+django-components agree on where such a tag ends.
 
-## How the two engines meet
+## Using Django and Citry together
 
-Neither syntax changes. Each engine's own parser decides what belongs to
-it, and this package names no tag of its own.
+Write Django tags in a component's template and `<c-*>` elements in a Django
+template, each in its normal syntax. A `<c-*>` element in a Django template,
+with its content, is a *region*; Citry compiles the region, and Django
+compiles the rest of the template. Each engine's own parser decides which
+parts belong to it, and citry-django adds no template syntax of its own.
 
-### Django tags inside a Citry component
+### Django tags in a component
+
+Write a Django tag in a component's template as you would in a Django
+template, with the `{% load %}` it needs:
 
 ```python
 from citry import Citry, Component
@@ -132,24 +142,26 @@ class Hero(Component):
     """
 ```
 
-Pass the request so `takes_context` tags work:
+Tags that use `takes_context` need the request. Pass it as a template global:
 
 ```python
-Hero(title="Hi", image=img, page=page).render(template_globals={"request": request})
+hero = Hero(title="Hi", image=img, page=page)
+hero.render(template_globals={"request": request})
 ```
 
-A `<c-*>` region in a Django template does this for you: it hands the request
-down as a render global, so a tag needs it at any depth. You only pass it
-yourself when you render a component straight from Python.
+A `<c-*>` region in a Django template passes the request down as a render
+global, so a tag that needs it gets it at any depth. You pass it yourself only
+when you render a component straight from Python.
 
-What else a component sees is
-[`context_behavior`](#what-a-component-can-read): isolated, so it takes its
-inputs and nothing else, or `"django"`, so the host's context is there to fall
-back on the way it is in an `{% include %}`.
+What else a component can read depends on the `context_behavior` setting. By
+default a component reads its inputs and the values your context processors
+provide. With `context_behavior="django"` it also reads the host template's
+context, as an `{% include %}` does. See
+[Choosing what components read](#choosing-what-components-read).
 
-### Citry components inside a Django template
+### Components in Django templates
 
-Write Citry's own element syntax. No `{% load %}`, no wrapper tag:
+Write Citry's own element syntax. You need no `{% load %}` and no wrapper tag:
 
 ```html
 {% extends "base.html" %}
@@ -164,32 +176,33 @@ Write Citry's own element syntax. No `{% load %}`, no wrapper tag:
 ```
 
 The surrounding template keeps its inheritance, its blocks and its Wagtail
-tags. That is what makes a *progressive* migration possible: replace one region
-at a time.
+tags, so you can migrate progressively, one region at a time.
 
-Both ways of writing that input work, and they mean different things:
+You can write an input in two ways, and they mean different things:
 
 ```html
-<c-hero title="{{ page.title }}" image="{{ page.hero_image }}" />   <!-- Django -->
-<c-hero c-title="page.title" c-image="page.hero_image" />           <!-- Citry -->
+<!-- Django -->
+<c-hero title="{{ page.title }}" image="{{ page.hero_image }}" />
+<!-- Citry -->
+<c-hero c-title="page.title" c-image="page.hero_image" />
 ```
 
-The first stays closest to the template around it, reads the same as every
-other attribute on the page, and is the one to reach for while migrating. The
-second is a Python expression, which is what you want as soon as the value is
+While migrating, use the first form. It reads like every other attribute in the
+template around it. Use the second form, a Python expression, when the value is
 more than a lookup:
 
 ```html
 <c-hero c-title="page.title.upper()" c-count="len(articles)" />
 ```
 
-Either way a lone `{{ dotted.path }}` hands the component the *object*, not a
-rendering of it, so `image` arrives as the image. See
-[Writing an input](#writing-an-input) for the whole rule.
+A `c-x` expression gives the component its result. A plain attribute does the
+same only when the whole value is one `{{ dotted.path }}`: then `image` arrives
+as the image, not a rendering of it. See
+[Writing component inputs](#writing-component-inputs) for the full rule.
 
-### Everything Citry allows works in a region
+### Citry features in a region
 
-A region is compiled by Citry itself, so nothing is off limits:
+A region is compiled by Citry itself, so every Citry feature works in it:
 
 ```html
 {% load wagtailcore_tags %}
@@ -216,14 +229,16 @@ A region is compiled by Citry itself, so nothing is off limits:
 <c-component c-is="which_one" label="dynamic"/>
 ```
 
-Two things worth knowing:
-
-- **`{% load %}` at the top of the file counts inside regions too**, so a tag
+- **`{% load %}` at the top of the file also applies inside regions**, so a tag
   written in a component body needs no second `{% load %}`.
 - **Context variables reach the region.** A region inside
-  `{% for article in articles %}` can use `article`.
+  `{% for article in articles %}` can use `article`. (A component's own
+  template reads context by a different rule; see
+  [Choosing what components read](#choosing-what-components-read).)
 
-### A Django block can wrap Citry content
+### Django blocks around components
+
+A Django block can wrap Citry components:
 
 ```html
 {% if page.featured %}
@@ -233,22 +248,24 @@ Two things worth knowing:
 {% endif %}
 ```
 
-Django evaluates the block and only asks for the branch it takes, so:
+Django evaluates the block first and renders only the branch it takes, so:
 
-- **Guards are lazy.** `{% if user.is_staff %}<c-admin-panel/>{% endif %}` does
-  not render the panel for anyone else.
-- **Names Django binds are visible to Citry.** `{% with n=5 %}<p>{{ n }}</p>{% endwith %}`
-  works, and a Django `{% for %}` can drive Citry components with its loop
-  variable.
+- **A guard skips what it hides.**
+  `{% if user.is_staff %}<c-admin-panel/>{% endif %}` does not render the panel
+  for anyone else.
+- **Citry can read names that Django binds.**
+  `{% with n=5 %}<p>{{ n }}</p>{% endwith %}` works, and a Django `{% for %}`
+  can drive Citry components with its loop variable.
 
 Nesting works in either direction: `{% if %}` inside `<c-for>`, `<c-for>`
 inside `{% if %}`.
 
-#### Components that need Vue inside a Django block
+#### Islands in Django blocks
 
 A component that needs Vue (one with `js_data()`, `Events`, Vue bindings or
-its own `js`) runs as its own Vue app, an *island*. Inside a Django block of a
-component's template, each such component becomes an island where it stands:
+its own `js`) runs as its own Vue app, called an *island*. When such a
+component stands inside a Django block of a component's template, it becomes
+an island where it stands:
 
 ```html
 <ul>
@@ -258,54 +275,58 @@ component's template, each such component becomes an island where it stands:
 </ul>
 ```
 
-gives one island per row, and the `<ul>` and `<li>` stay plain HTML. A Django
-`{% for %}` needs no `#c-key`, in a component or in a Django template, because
-each iteration's component is the root of its own app. A Citry `<c-for>` that
-repeats an interactive component inside one island still needs `#c-key`.
+This gives one island per row, and the `<ul>` and `<li>` stay plain HTML. A
+Django `{% for %}` needs no `#c-key`, in a component or in a Django template,
+because each iteration's component is the root of its own app. A Citry
+`<c-for>` that repeats a component that needs Vue inside one island still needs
+`#c-key`.
 
-A component becomes an island only when no Vue app holds it already. So
-citry-django waits until the whole `<c-*>` region has rendered, or, for a
-component you render straight from Python or that a server event renders,
-until that component has. Then it decides:
+Put components that work together in one Citry component, so they share an
+island. An island can update only the components inside it, so a server event
+in one row cannot re-render another row.
+
+A component becomes an island only when no Vue app already holds it.
+citry-django therefore waits until the whole `<c-*>` region has rendered (or,
+for a component you render straight from Python or that a server event
+renders, until that component has rendered), and then decides:
 
 - When nothing else in the region needs Vue, each such component becomes its
   own island, as in the list above.
 - When something else in the region needs Vue, the whole region is one Vue
   app, and it holds these components too. The HTML that Django writes around
   them goes into that app as finished blocks; see
-  [Django content inside an interactive component](#django-content-inside-an-interactive-component).
+  [Django content in Vue components](#django-content-in-islands).
 - The same happens when such a component holds content that the component
   around it passes in, between its tags or in a `<c-fill>`. Vue cannot own
   that content from a separate app, so the component cannot be an island of
   its own. If Citry then refuses such a region in a Django template, the
   error names that component.
 
-A page rendered through a Django template loads Citry's browser runtime
-once however many islands it holds; see
-[Where a component's assets go](#where-a-components-assets-go). A
-component you render straight from Python has no such page, so each island
-inside it writes its own copy, and the browser runs it once. An
-island can update only the components inside it: a server
-event in one row cannot re-render another row. Put components that work
-together in one Citry component, so they share an island.
+A page rendered through a Django template loads Citry's browser runtime once,
+however many islands it holds; see
+[Where a component's assets go](#where-a-components-assets-go). A component you
+render straight from Python has no such page, so each island inside it writes
+its own copy, and the browser runs it once.
 
-#### Django content inside an interactive component
+#### Django content in islands
 
-An interactive component can hold what Django renders: a fill written in a
+A component that needs Vue can hold what Django renders: a fill written in a
 Django template, or a static component whose own template has Django tags.
 
 ```html
 {% load i18n %}
 <c-modal title="Help">
   {% translate "Read the guide first." %}
-  {% if user.is_staff %}<a href="{% url 'admin:index' %}">Admin</a>{% endif %}
+  {% if user.is_staff %}
+    <a href="{% url 'admin:index' %}">Admin</a>
+  {% endif %}
 </c-modal>
 ```
 
 Citry puts Django's output into the Vue app as finished blocks of HTML. Vue
 inserts each block as it is and never compiles it, so Vue syntax in it,
-such as `{{ }}` or `@click` in a visitor's text, stays text. Inside these
-blocks the following work:
+such as `{{ }}` or `@click` in a visitor's text, stays text. These work inside
+the blocks:
 
 - value tags, filters, `{% if %}`, `{% for %}` and `{% with %}`;
 - components that need no Vue;
@@ -319,9 +340,9 @@ template has no Vue syntax. Citry writes the template as a finished block
 too.
 
 citry-django raises `IslandContentError` for Django output that Vue cannot
-hold, and says what to change:
+hold, and the error says what to change:
 
-| Django output inside an interactive component | What to do |
+| Django output inside a component that needs Vue | What to do |
 |---|---|
 | HTML that is not complete, such as `{{ html\|safe }}` holding an unclosed `<div>` | Make the HTML complete, or keep each Django tag inside the element it opens |
 | A component that needs Vue inside an element of HTML that a template with Django tags wrote | Write the element and the Django tag around the component as Citry: `<c-if>` and `<c-for>` for `{% if %}` and `{% for %}` |
@@ -330,21 +351,20 @@ hold, and says what to change:
 | HTML inside `<svg>`, `<math>` or a text-only element such as `<textarea>` | Write that markup as Citry, or pass the text in as a value |
 | Vue syntax in a template that also has Django tags | Compute the Django value in `template_data()` (`reverse()`, `static()`, `gettext()`), or move the Vue syntax into a component whose template has no Django tags |
 
-A server event renders a component again with only what its handler
-passes. A fill that the page's Django template wrote is not part of that,
-so after a handler returns the modal above, the modal shows its fallback
-content instead of the fill. Django tags in a component's own template
-render again for the event, with what
-[`render_inputs`](#what-a-component-a-server-event-renders-can-read) gives
-them. So put Django content that must stay after a server event into a
-component's template, and render that component inside the one the
-handler returns.
+To keep Django content on the page after a server event, put it in a
+component's template, and render that component inside the one the handler
+returns. A server event renders a component again with only what its handler
+passes. A fill that the page's Django template wrote is not part of that, so
+after a handler returns the modal above, the modal shows its fallback content
+instead of the fill. Django tags in a component's own template render again
+for the event, with what
+[`render_inputs`](#context-for-server-events) gives them.
 
-## Writing an input
+## Writing component inputs
 
-### `c-x` is Python, a plain attribute is Django
-
-`c-x="..."` is a Python expression and stays Citry's; Django's syntax belongs in an ordinary attribute. Every input a component takes can be written either way, so there is nothing you can only say with one of them.
+Use `c-x="..."` for a Python expression, and a plain attribute for Django
+syntax. You can write every input either way, so neither form limits what you
+can pass.
 
 ```html
 <c-icon image="{{ product.image }}" />
@@ -352,13 +372,29 @@ handler returns.
 <c-badge label="{{ count }} left" />
 ```
 
-What the component receives depends on what the value can be. A lone `{{ dotted.path }}` is resolved by Django's own `Variable` - dictionary key, then attribute, then index, calling what it finds unless it is marked `alters_data` - and arrives as **the object**, so a component gets an image or a model rather than a rendering of one. Anything else - a tag, a filter, text beside the interpolation - can only be a string, and arrives as one.
+### `c-x` versus plain attributes
 
-A name that is not there resolves to the engine's `string_if_invalid`, empty by default, which is what the same path would render in a Django template. Citry treats an absent name as an error and this does not, deliberately: the point of writing `{{ }}` is that the path means what it means in Django.
+What the component receives depends on what the value is:
 
-### `{{ ... }}` - both meanings, decided exactly
+- A plain attribute whose whole value is one `{{ dotted.path }}` gives the
+  component the object itself, so it gets an image or a model, not a rendering
+  of one. Django's own `Variable` resolves the path: dictionary key, then
+  attribute, then index, calling what it finds unless it is marked
+  `alters_data`.
+- Any other plain value (a tag, a filter, or text beside the interpolation)
+  arrives as a string.
 
-Both engines spell interpolation `{{ }}`, so each one is decided on its own:
+A name that does not exist resolves to the template engine's
+`string_if_invalid` (empty by default), as the same path would in a Django
+template. Citry normally treats an absent name as an error, but this case
+deliberately does not, so that a `{{ }}` path means in a component what it
+means in Django.
+
+### Django or Citry interpolation
+
+Both engines write interpolation as `{{ }}`, so citry-django decides each one
+separately. There is nothing to configure. citry-django checks the same filter
+registry that your `{% load %}` lines fill, so filters from any package work.
 
 | Expression | Goes to | Because |
 |---|---|---|
@@ -368,24 +404,44 @@ Both engines spell interpolation `{{ }}`, so each one is decided on its own:
 | `{{ ', '.join(names) }}` | Citry | a call |
 | `{{ a \| b }}` | Citry | `b` is not a registered filter, so this is a bitwise or |
 
-There is nothing to configure. Filters from any package work, because the rule
-asks the same registry your `{% load %}` lines fill.
+Inside a quoted attribute value, a `{{ }}` always goes to Django, without any
+of those checks. Citry reads such a value as literal text, so if Django did not
+resolve it, nobody would, and the braces would reach the page.
 
-One position decides without asking: inside a quoted attribute value, a `{{ }}`
-is always Django's. Citry reads such a value as literal text, so leaving it to
-Citry would mean nobody resolved it and the braces reached the page.
+## Choosing what components read
 
-## What a component can read
+Set `context_behavior` to choose what a component's own template can read
+besides the inputs you pass it.
 
-Two rules meet here, and neither is wrong.
+### Which `context_behavior` to use
 
-Citry's is that a component takes its inputs: what the template around it could see is not automatically its to read. Django's is the opposite - an `{% include %}` sees everything the including template saw - and a Django project is written expecting that. So it is a setting, named after [the django-components one](https://django-components.github.io/django-components/docs/concepts/advanced/component_context_scope/) that does the same job:
+- **Moving existing Django templates over:** use `context_behavior="django"`.
+  A component then sees the same variables an `{% include %}` would, so your
+  templates keep working.
+- **Writing new components:** keep the default, `"isolated"`. A component sees
+  only what you pass it (plus `request` and your context processors' values),
+  so you can tell what it uses by reading the place that calls it.
+
+Context processors work in both modes.
 
 ```python
-app = Citry(extensions=[CitryDjangoExtension(context_behavior="django")])
+extension = CitryDjangoExtension(context_behavior="django")
+app = Citry(extensions=[extension])
 ```
 
-`"isolated"` (the default) keeps Citry's rule. `"django"` lets a component's own template fall back to the host's context:
+Any other value raises `ValueError` when you create the extension. The name
+and the values follow [the django-components
+setting](https://django-components.github.io/django-components/docs/concepts/advanced/component_context_scope/)
+that does the same job.
+
+### What `context_behavior` changes
+
+With `"isolated"`, Citry's own rule, a component takes its inputs and nothing
+else, apart from context processor values. What the template around it can
+see is not automatically available to it. With `"django"`, Django's rule, a component's own template falls back to
+the host's context (the context the surrounding Django template was rendered
+with), at any depth of nesting. An `{% include %}` works this way,
+and a Django project is usually written expecting it.
 
 ```python
 def article_list(request):
@@ -402,27 +458,37 @@ def article_list(request):
 <h1>{{ heading }}</h1>
 ```
 
-A fallback is all it is: a component that defines `heading` in its own `template_data` uses that one. Nothing is shadowed, and nothing is copied.
+If the component sets `heading` in its own `template_data`, its own value
+wins. The host's context is only a fallback, and citry-django does not copy it
+into the component.
 
-### Context processors are ambient in both
+### Context processors
 
-Whatever your `context_processors` put in a template's context is there for every component, at any depth, whichever mode you choose - because that is what they are in Django. `user`, `LANGUAGE_CODE`, `MEDIA_URL`, and anything your own project adds:
+Whatever your `context_processors` put in a template's context is available to
+every component, at any depth, in both modes, as in Django. That includes
+`user`, `LANGUAGE_CODE`, `MEDIA_URL` and anything your own project adds:
 
 ```html
 <p>Hello {{ user.get_short_name }}</p>
 <a href="{{ request.path }}">this page</a>
 ```
 
-They are read from the engine's own processor list rather than inherited from how the host happened to be rendered, so a template rendered without `RequestContext` has them too. Nothing here names a processor, so a project's own arrives on the same footing as Django's.
+citry-django reads them from the engine's own processor list, not from how the
+host happened to be rendered, so a template rendered without `RequestContext`
+has them too. It names no processor, so a project's own works the same way as
+Django's.
 
-The setting is about the *view's* context, which is the part Django hands down and Citry does not.
+`context_behavior` controls only the *view's* context, which Django passes down
+to an included template and Citry does not.
 
-For an extension that has to reach host state whatever the mode, the whole context is provided under `"django"`: `self.inject("django")`.
+**For extension authors:** in both modes the whole host context is provided
+under `"django"`, so an extension can reach host state with
+`self.inject("django")`.
 
-### The locale is Django's active language
+### Language and locale
 
-When your Citry app has translations, a region renders in the language
-Django activated for the request (`get_language()`), so `tr()` follows
+When your Citry app has translations, a region renders in the language Django
+activated for the request (`get_language()`), so `tr()` follows
 `LocaleMiddleware` and `translation.override()` the way `{% translate %}`
 does. A regional variant falls back to its base language: `en-us` uses `en`
 when the app lists only `en`. A language the app does not list renders in
@@ -430,12 +496,13 @@ the app's default locale, and citry-django logs a warning the first time.
 A component a server event renders gets the locale too, once you set
 `render_inputs` (see the next section).
 
-### What a component a server event renders can read
+### Context for server events
 
-When a server event's handler returns a component, Citry renders it again
-outside any Django template, so by default it has no `request`, no context
-processor values and no locale. Pass `render_inputs` as Citry's
-`_render_inputs` Events setting:
+To give a component that a server event renders the `request`, your context
+processors' values and the locale, set `render_inputs` as Citry's
+`_render_inputs` Events setting. Without it, the component has none of them,
+because when a server event's handler returns a component, Citry renders it
+again outside any Django template.
 
 ```python
 from citry_django import CitryDjangoExtension, render_inputs
@@ -448,10 +515,9 @@ app = Citry(
 
 Citry then calls it once for each server event call whose handler returns
 a component, after Django's and Citry's CSRF checks, the State check and
-the handler. The component gets what a region
-gets on the page: `request` and your context processors' values as
-template globals, those values under `self.inject("django")`, and Django's
-active language as its locale.
+the handler. The component gets what a region gets on the page: `request` and
+your context processors' values as template globals, those values under
+`self.inject("django")`, and Django's active language as its locale.
 
 The values come from the server event's request, not from the page's:
 
@@ -468,17 +534,21 @@ The values come from the server event's request, not from the page's:
 
 ## Assets
 
+citry-django writes each component's CSS and JavaScript once per page. Mount
+[Citry's routes](#mounting-citrys-routes) so the browser can load Citry's
+runtime from a URL instead of getting it inline.
+
 ### Where a component's assets go
 
 A Django template renders each `<c-*>` region on its own, and each region
-that needs Vue is its own Vue app, an *island*. Citry hands a region's asset
-tags back apart from its HTML, and the region writes them around its HTML:
-CSS before it, JavaScript after it. Its HTML then works on its own, which is
-what lets you store it and render it again later.
+that needs Vue is its own Vue app, an *island*. Citry returns a region's asset
+tags separately from its HTML, and the region writes them around its HTML:
+CSS before it, JavaScript after it. The HTML then works on its own, so you can
+store it and render it again later.
 
 The backend opens a *page* around the outermost render. When the render has
-finished, the page reads the tags back, writes each one once, and moves them
-if you named a spot:
+finished, the page collects the tags, writes each one once, and, if you named a
+place for them, moves them there:
 
 ```html
 <head>
@@ -490,9 +560,9 @@ if you named a spot:
 </body>
 ```
 
-A `<c-css />` or `<c-js />` names the spot when it stands in the Django
-template itself, outside any component. Without one, the tags stay beside the
-region that wrote them, still written once.
+A `<c-css />` or `<c-js />` sets where the tags go when it stands in the
+Django template itself, outside any component. Without one, the tags stay
+beside the region that wrote them, still written once.
 `CITRY_COLLECT_PAGE_ASSETS = False` turns the whole thing off.
 
 The page sorts the tags into three groups:
@@ -501,13 +571,13 @@ The page sorts the tags into three groups:
 - component CSS and JavaScript, written once per page;
 - each island's own stylesheet, configuration block and start script. Every
   configuration block and start script is kept, because each names its own
-  island. With [Citry's routes](#citrys-own-routes) mounted, the stylesheet
+  island. With [Citry's routes](#mounting-citrys-routes) mounted, the stylesheet
   is a link, and islands that load the same file share one link that names
   all of them. Without the routes it is an inline `<style>`, and islands
   with the same styles share one that names all of them.
 
-In a spot, the runtime tags come first, then the component tags, then the
-island tags.
+At the `<c-css />` or `<c-js />` position, the runtime tags come first, then
+the component tags, then the island tags.
 
 Islands that translate in the browser work the same way: each island
 carries its own messages in its configuration block, and the i18n runtime
@@ -518,15 +588,14 @@ HMAC-SHA256) of those tags,
 keyed from your `SECRET_KEY` (with `SECRET_KEY_FALLBACKS` accepted, as
 Django accepts them for its own signed values). The page moves only tags
 whose comment matches and leaves anything else that looks like one where it
-is. A spot is signed for the page that wrote it, so a `<c-css />` inside
-`{% cache %}` does not collect on a later page; the tags then stay beside
-their regions. Keep the spots outside cached blocks.
+is. A `<c-css />` or `<c-js />` is signed for the page that wrote it, so one
+inside `{% cache %}` does not collect on a later page; the tags then stay
+beside their regions. Keep `<c-css />` and `<c-js />` outside cached blocks.
 
-Nothing in the markup refers back to the page that produced it, so a region's
-HTML stands on its own. `{% cache %}` around a region that needs no Vue
-works. So does a rendered fragment you stored and send back later, and a
-base template you kept in a dict, which is the kind of thing an admin does
-more often than it sounds.
+A region's HTML does not depend on the page that produced it, because nothing
+in the markup refers back to it. So `{% cache %}` around a region that needs no
+Vue works. So does a rendered fragment you stored and send back later, and a
+base template you kept in a dict.
 
 Do not cache a region that holds an island. Its State tokens expire, its
 CSP nonce belongs to an earlier response, and a cached copy does not make
@@ -535,7 +604,7 @@ Django send the CSRF cookie that the island's server events need.
 The page collects nothing under `CITRY_DEPS_STRATEGY = "fragment"`: each
 region keeps the tags Citry places for it.
 
-### Partial responses: htmx and template partials
+### Partial responses and htmx
 
 A partial response is HTML that the browser inserts into a page it has
 already loaded: an htmx swap, a Django 6 template partial such as
@@ -573,9 +642,9 @@ htmx runs the loader when it swaps the HTML in. Inserting with `innerHTML`
 does not run scripts, so the page must have loaded the runtime already,
 for example with an island of its own.
 
-Things to know:
+#### Using fragments
 
-- Mount [Citry's routes](#citrys-own-routes). A fragment loads the runtime
+- Mount [Citry's routes](#mounting-citrys-routes). A fragment loads the runtime
   and the island's files by URL. Without the routes, citry-django writes the
   island for a whole page, as it does for any other response, and with
   `DEBUG` on it issues `PartialResponseWarning`.
@@ -588,28 +657,33 @@ Things to know:
   `Vary: HX-Request` to the response (Django's
   `@vary_on_headers("HX-Request")`), so a cache does not hand one out for
   the other.
-- Under a nonce-based Content Security Policy, the partial's islands must
-  carry the nonce of the page they land in, not the nonce of the partial's
-  own response. A page that holds an island and has a nonce writes the
-  htmx snippet from Citry's docs ([Nonces in
-  fragments](https://citry.dev/security/#html-fragments)), which sends
-  `Citry.pageNonce()` in an `X-Citry-Page-Nonce` header with each request to
-  the page's own origin. It checks the URL against both the page's address
-  and its base URL, so a `<base>` tag cannot send the nonce to another site.
-  A `base-uri 'none'` or `'self'` directive in your policy helps too. A
-  URL on your site that redirects to an address taken from the request
-  passes the header on to another site. Django's own redirect helpers
-  check the host (`url_has_allowed_host_and_scheme`), so use them. To keep
-  the header to the URLs that answer with fragments, set
-  [`CITRY_PAGE_NONCE_PATHS`](#citry_page_nonce_paths). The partial's islands use that nonce, read with
-  Citry's `page_nonce_from_headers()`, so each tab gets its own. A request
-  that is not htmx's can send the header itself. Without the header, a
-  partial uses the nonce citry-django keeps in the session, if the app
-  asked for that (see [HTML a server event sends back needs the page's CSP
-  nonce](#html-a-server-event-sends-back-needs-the-pages-csp-nonce)). With
-  neither, it carries its own response's nonce, and the browser refuses to
-  start it. A page without an island writes no snippet, so the first
-  partial it loads gets no header.
+- Under a nonce-based Content Security Policy, a partial's islands must carry
+  the nonce of the page they land in, not the nonce of the partial's own
+  response. citry-django looks for that nonce in this order:
+
+    1. The `X-Citry-Page-Nonce` header, read with Citry's
+       `page_nonce_from_headers()`, so each tab gets its own. A page that
+       holds an island and has a nonce writes the htmx snippet from Citry's
+       docs ([Nonces in fragments](https://citry.dev/security/#html-fragments)),
+       which sends `Citry.pageNonce()` in this header with each request to
+       the page's own origin. A request that is not htmx's can send the header
+       itself.
+    2. The nonce citry-django keeps in the session, if the app asked for that
+       (see [CSP nonce in server event HTML](#csp-nonce-in-server-event-html)).
+    3. The nonce of the partial's own response. The browser then refuses to
+       start the island.
+
+  A page without an island writes no snippet, so the first partial it loads
+  gets no header.
+
+  The snippet checks the URL against both the page's address and its base URL,
+  so a `<base>` tag cannot send the nonce to another site. A `base-uri 'none'`
+  or `'self'` directive in your policy helps too. A URL on your site that
+  redirects to an address taken from the request passes the header on to
+  another site. Django's own redirect helpers check the host
+  (`url_has_allowed_host_and_scheme`), so use them. To keep the header to the
+  URLs that answer with fragments, set
+  [`CITRY_PAGE_NONCE_PATHS`](#citry_page_nonce_paths).
 - A partial's HTML then depends on a header the request chose, so a shared
   cache must not hand it to anyone else. Add `PageNonceMiddleware`:
 
@@ -626,11 +700,12 @@ Things to know:
   stored before any middleware sees the response, so do not cache a
   partial view that holds an island, or add
   `@vary_on_headers("X-Citry-Page-Nonce")` inside `@cache_page`.
-- If the app configures `i18n` and the page has no island of its own, the
-  first fragment is discarded: the loader adds Citry's runtime but not its
-  i18n plugin ("missing or incompatible Citry browser plugin: i18n"). Put
-  an island on every page that swaps in fragments, so the page loads the
-  runtime and its plugins. Citry tracks this in
+- Put an island on every page that swaps in fragments, so the page loads the
+  runtime and its plugins. On Citry 1.1.0, a fragment's loader adds Citry's
+  runtime but not the browser code of Citry's extensions. If the app
+  configures `i18n` and the page has no island of its own, the first fragment
+  is discarded, and the browser console shows `missing or incompatible Citry
+  browser plugin: i18n`. Citry tracks this in
   [citry#810](https://github.com/citry-dev/citry/issues/810).
 - A component without Vue in a partial gets its `<link>`, `<style>` and
   `<script>` tags in the partial itself, each written once.
@@ -639,27 +714,22 @@ Things to know:
   It is usually a partial that citry-django could not recognise, such as
   one fetched without `HX-Request`.
 
-On Citry 1.1.0, a fragment's loader adds Citry's runtime but not the browser
-code of Citry's extensions. With i18n configured, a fragment inserted into a
-page that has not loaded that code is discarded, and the browser console
-shows `missing or incompatible Citry browser plugin: i18n`. A page with an
-island of its own loads it.
+### Declaring assets
 
-### Declaring what a component needs
-
-Two ways, and they are not interchangeable. One is the component's own code;
-the other is code it merely depends on.
+Declare a component's own stylesheet and script with `css` / `css_file` /
+`js` / `js_file`. Declare a library or file that the component only depends on
+with `Dependencies`. The two are not interchangeable:
 
 | | `css` / `css_file` / `js` / `js_file` | `Dependencies` |
 |---|---|---|
-| What it is for | The component's own stylesheet and behaviour | A charting library, a shared theme, a vendored script |
+| What it is for | The component's own stylesheet and behaviour | A charting library, a shared theme, a third-party script |
 | How it arrives | Citry reads the file and hands over its contents | A URL the browser fetches |
 | Where the file may live | Anywhere Citry's `dirs` reach, so beside the component | Anywhere staticfiles reaches |
 | `css_data()` / `js_data()` | Feeds them | Does nothing |
 | `$component(...)` | Registered, and the client runtime is shipped | Not registered |
 | Read from disk | Once per class, then cached | Never: the browser fetches it |
 
-#### The component's own
+#### A component's own files
 
 ```python
 class Slider(Component):
@@ -673,20 +743,20 @@ class Slider(Component):
         return {"slides": len(kwargs.images)}
 ```
 
-Citry reads both files against its `dirs` and hands the contents to the
-render, so `styles()` and staticfiles are not involved. What you get back is
-what makes this worth reaching for: `css_data()` becomes custom properties
-scoped to this instance's elements, `js_data()` values become members of the
-`component` object that the `$component(({ component }) => ...)` callback
-receives, and Citry ships the client runtime because it can see that the
-component asked for one.
+Citry reads both files, resolved against its `dirs`, and passes the contents
+to the render, so `styles()` and staticfiles are not involved. You also get
+three things: `css_data()` becomes custom properties scoped to this
+instance's elements, `js_data()` values become members of the `component`
+object that the `$component(({ component }) => ...)` callback receives, and
+Citry ships the client runtime because it can see that the component asked
+for one.
 
 The contents arrive as a dependency like any other, so
-[citry-django-compressor](#one-file-for-a-whole-response) compiles and bundles
+[citry-django-compressor](#one-file-per-response) compiles and combines
 them into one file. Without it they are written inline into every page, which
 also means a `.scss` reaches the browser uncompiled.
 
-#### Code the component does not own
+#### Files a component depends on
 
 ```python
 from citry_django import scripts, styles
@@ -698,10 +768,10 @@ class Slider(Component):
         js = scripts(["vendor/swiper.js"])
 ```
 
-`styles()` and `scripts()` turn the static paths a project already writes into
-what Citry wants. Both accept a path or a list of them, and take extra
-attributes as keywords, so a project can keep its paths in constants and write
-the tag's own attributes where it names them:
+`styles()` and `scripts()` turn the static paths your project already uses
+into the form Citry expects. Both accept a path or a list of paths, and take
+extra HTML attributes as keywords, so you can keep paths in constants and set
+the tag's attributes where you use them:
 
 ```python
 css = styles(Css.CARD, Css.GRID, media="screen")
@@ -711,16 +781,16 @@ css = styles(Css.CARD, Css.GRID, media="screen")
 the browser skips that stylesheet when printing. Anything else you pass is
 written out the same way.
 
-What comes out is a `<script src>` or a `<link href>`, the same as writing one
-in a template by hand. No registration, no per-render data, and the browser
-caches it on its own.
+The output is a `<script src>` or a `<link href>`, the same as writing one
+in a template by hand. There is no registration and no per-render data, and
+the browser caches the file by itself.
 
-They live in `citry_django` and know nothing about compression. Without the
-compressor extension they are plain static URLs.
+Both functions live in `citry_django` and do not depend on compression.
+Without the compressor extension they produce plain static URLs.
 
-### Where those files live
+### Where asset files live
 
-Beside the component, either way:
+Put the files beside the component, for either kind of declaration:
 
 ```
 components/slider/slider.py
@@ -732,47 +802,46 @@ For `css_file` and `js_file` that is all it takes: Citry resolves the path
 against its own `dirs` and reads the file itself, so staticfiles never sees
 it.
 
-A `Dependencies` entry is a URL, so Django has to be able to find the file
-too. `ComponentFinder` serves those same `dirs` to staticfiles:
+A `Dependencies` entry is a URL, so Django has to find the file as well. Add
+`ComponentFinder`, which serves those same `dirs` to staticfiles:
 
 ```python
 # settings.py
 STATICFILES_FINDERS = [
     "django.contrib.staticfiles.finders.FileSystemFinder",
     "django.contrib.staticfiles.finders.AppDirectoriesFinder",
-    # Before CompressorFinder, so a component's own file wins over a copy an
-    # earlier `collectstatic` left behind.
+    # Before CompressorFinder, so a component's own file wins over a
+    # copy an earlier `collectstatic` left behind.
     "citry_django.finders.ComponentFinder",
     "compressor.finders.CompressorFinder",
 ]
 ```
 
-One list of directories, so the two cannot drift apart: what Citry resolves is
-what Django finds, what `collectstatic` collects, and what django-compressor
-reads. Nothing in the compressor package knows about components; it reads a
-static file like any other.
+Citry and Django use one list of directories, so they cannot disagree: what
+Citry resolves is what Django finds, what `collectstatic` collects, and what
+django-compressor reads. The compressor package knows nothing about
+components; it reads a static file like any other.
 
-Only assets leave those directories. A component's `.py` and its `.html` are
-not static files, and a component directory is the one place where they sit
-beside ones that are. `ComponentFinder.served` is the set of suffixes, and
-`is_served()` the rule it feeds; subclass to change either.
+`ComponentFinder` serves only assets from those directories. A component's
+`.py` and `.html` files are not static files, though they sit beside ones
+that are. `ComponentFinder.served` is the set of served suffixes, and
+`is_served()` is the rule that uses it; subclass to change either.
 
-An ordinary `myapp/static/card/card.css` keeps working as it always did, with
-no finder involved. `styles()` calls Django's own `static()` either way, so the
+An ordinary `myapp/static/card/card.css` keeps working with no finder
+involved. `styles()` calls Django's own `static()` either way, so the
 URL follows `STATIC_URL` and whatever storage you configured. In production
 `collectstatic` gathers both, and django-compressor reads from `COMPRESS_ROOT`
 (your `STATIC_ROOT` unless you say otherwise) and writes its output under
 `CACHE/`, which `compressor.finders.CompressorFinder` then serves and collects.
 
-This covers the assets Citry collects, and only those. A Django template that
-asks for its own CSS is not Citry's to see, and a `{% compress %}` block around
-it is still the way to say so.
+This covers only the assets Citry collects. Citry cannot see CSS that a Django
+template asks for itself; keep using a `{% compress %}` block around it.
 
-### Compiling what a browser cannot read
+### Compiling assets
 
-A `.scss`, `.less` or `.coffee` has to be compiled first. That is
-django-compressor's job, and it picks its precompiler on one thing only: the
-asset's `type`. Name the suffixes your project compiles, once:
+A `.scss`, `.less` or `.coffee` file has to be compiled before a browser can
+read it. django-compressor does that, and it picks the precompiler by the
+asset's `type` alone. Map each suffix your project compiles to a type, once:
 
 ```python
 # settings.py
@@ -780,24 +849,24 @@ COMPRESS_PRECOMPILERS = (("text/x-scss", "django_libsass.SassCompiler"),)
 CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
 ```
 
-Now a call can name both kinds and each gets what it needs:
+Now one call can name both kinds of file, and each gets the right treatment:
 
 ```python
 css = styles(["card/card.css", "card/card.scss"])
 ```
 
-The mimetype is an arbitrary string that has to match your
-`COMPRESS_PRECOMPILERS` entry exactly, so nothing is assumed: without the
-mapping a `.scss` arrives as source and leaves as source. An asset that names
-its own `type` always wins.
+The mimetype is an arbitrary string that must match your
+`COMPRESS_PRECOMPILERS` entry exactly. citry-django does not guess a mapping: without
+the mapping, a `.scss` file arrives as source and leaves as source. An asset
+that names its own `type` always wins.
 
-A `css_file` is covered by the same mapping, though it has no URL to read a
-suffix from: it arrives as contents. The component knows what it declared, and
-the extension asks it.
+A `css_file` uses the same mapping. It has no URL to read a suffix from,
+because it arrives as contents, so the extension asks the component which file
+it declared.
 
-#### With `css_data()`
+#### Using `css_data()` with Sass
 
-The two happen at different times and do not get in each other's way:
+Sass and `css_data()` run at different times, so they do not interfere:
 
 ```python
 class Badge(Component):
@@ -815,46 +884,50 @@ class Badge(Component):
 }
 ```
 
-Sass runs on the server and resolves the nesting; a custom property is
-resolved by the browser, so `var(--accent)` passes through the precompiler
-untouched. What comes out is one compiled file for the rules and a small
-`<style>` per distinct set of values.
+Sass runs on the server and resolves the nesting. The browser resolves a
+custom property, so `var(--accent)` passes through the precompiler untouched.
+The result is one compiled file for the rules and a small `<style>` for each
+distinct set of values.
 
-What you cannot do is reach a value from `css_data()` while Sass is running.
-`darken(var(--accent), 10%)` has nothing to darken: at compile time that value
-does not exist yet. The same goes for anything that is not a CSS *value*. A
-custom property may stand where a value may stand, so it cannot pick a
-selector, drive a `@media` query, or feed an `@each`.
+Sass cannot read a `css_data()` value while it compiles.
+`darken(var(--accent), 10%)` has nothing to darken, because that value does
+not exist at compile time. A custom property can stand only where a CSS value
+can, so it cannot pick a selector, drive a `@media` query, or feed an
+`@each`.
 
-Values are strings, finite numbers, or `None`. A dict or a list is refused,
-which is worth knowing if you were hoping to hand over a Sass map: pass
-several properties instead, or move it to `js_data()`, which takes arbitrary
+`css_data()` values are strings, finite numbers, or `None`. A dict or a list
+is refused. To hand over what you would put in a Sass map, pass several
+properties instead, or move the data to `js_data()`, which takes arbitrary
 JSON.
 
 Anything that shapes the CSS itself, rather than filling in a value, belongs
 in the stylesheet or in a Sass function, where it is compiled once into the
 shared file.
 
-### One file for a whole response
+### One file per response
 
-With [citry-django-compressor] installed, the page is also where a response's
-assets become one compressed file, in the spot `<c-css />` and `<c-js />` name:
+With [citry-django-compressor] installed, the page combines a response's
+assets into one compressed file, placed where `<c-css />` and `<c-js />`
+stand:
 
 ```python
 from citry_django_compressor import CitryCompressorExtension
 
-app = Citry(extensions=[CitryDjangoExtension(), CitryCompressorExtension()])
+app = Citry(
+    extensions=[CitryDjangoExtension(), CitryCompressorExtension()],
+)
 ```
 
-Without a spot to put it, each region gets a file of its own: bundling a whole
-response needs somewhere to put the result, and putting it where you did not
-ask for it would be worse than not making one. Either way the page drops the
-repeats first, so a stylesheet two regions both asked for is compiled once.
+Without a `<c-css />` or `<c-js />`, each region gets a file of its own,
+because a combined file needs a place to go and citry-django does not choose
+one for you. Either way the page drops repeats first, so a stylesheet that two
+regions both asked for is compiled once.
 
-Any extension can do the same. The page emits `on_page_assets` with the
-response's component tags, once for the CSS and once for the JavaScript, and
-what it returns is what gets placed. Without a spot it emits the hook once
-per region instead, with `collected=False`. Beside the tags it passes
+**For extension authors:** any extension can combine assets the same way. The
+page emits `on_page_assets` with the response's component tags, once for the
+CSS and once for the JavaScript, and what it returns is what gets placed.
+Without a `<c-css />` or `<c-js />` it emits the hook once per region
+instead, with `collected=False`. Beside the tags it passes
 `entries`: for each tag Citry described, a `SerializedAssetEntry` naming the
 components that declared it, and `instance=True` when it may hold one
 render's data, such as `css_data()` values. Bundle only tags whose entry says
@@ -864,10 +937,11 @@ them would break the islands.
 
 [citry-django-compressor]: packages/citry-django-compressor
 
-### Citry's own routes
+### Mounting Citry's routes
 
-Citry serves its client runtime itself. Mount it, or it has nowhere to point a
-`src` at and inlines the whole bundle into every page, on every request:
+Mount Citry's routes so the browser loads Citry's client runtime from a URL.
+Without them, Citry has no URL to put in a `src`, so it inlines the whole
+runtime bundle into every page, on every request:
 
 ```python
 # urls.py
@@ -876,20 +950,20 @@ from citry_django.urls import urlpatterns as citry_urls
 urlpatterns = [*citry_urls(app, "/citry"), ...]
 ```
 
-List it where URL paths start at the site root, normally the root URLconf.
-The routes already sit under the prefix you pass, which is also where Citry
-points every `src`. Inside `path("citry/", include(...))` the prefix is added
-twice and every file answers 404. A project that wrapped the call that way
-for citry-django 0.3 drops the wrapper when it upgrades to 0.4.
+Put it where URL paths start at the site root, normally the root URLconf.
+The routes already sit under the prefix you pass, and Citry points every `src`
+at that prefix. Inside `path("citry/", include(...))` the prefix is added
+twice and every file answers 404. If you wrapped the call that way for
+citry-django 0.3, drop the wrapper when you upgrade to 0.4.
 
-That wraps Citry's own Django routes and gzips each file for a client that
-asks, because these are not files a web server serves: they come from a view,
-so an nginx rule naming a static directory never reaches them. It gzips only
-the routes that serve files. Citry's event endpoints sit beside them and
-answer each request separately, so the mount leaves them alone.
+This call wraps Citry's own Django routes and gzips each file for a client
+that asks. A web server cannot do that for these files, because they come from
+a view, so an nginx rule naming a static directory never reaches them. Only
+the routes that serve files are gzipped. Citry's event endpoints sit beside
+them and answer each request separately, so the mount leaves them alone.
 
-How long a browser keeps each file stays Citry's decision, and the mount
-passes Citry's `Cache-Control` and `ETag` through. Citry names the runtime and
+Citry decides how long a browser keeps each file, and the mount passes
+Citry's `Cache-Control` and `ETag` through. Citry names the runtime and
 the JavaScript that defines each Vue island by a hash of their content, such as
 `/citry/citry.173bbfea….js`, and marks them `immutable`. A file whose content
 can change at the same name, such as `cache/<class_id>.js`, gets `no-cache`
@@ -899,8 +973,8 @@ compressed body is a different body with the same content.
 
 ## Settings
 
-One is required; the rest have a working default and exist for a project that
-needs to say otherwise.
+Only `CITRY_APP` is required. The others have working defaults; set them to
+change the behavior.
 
 | Setting | Default |
 |---|---|
@@ -918,21 +992,21 @@ Dotted path to your `Citry` instance, with an optional `:attr` suffix:
 CITRY_APP = "myproject.citry_app:app"
 ```
 
-It may also name a callable, which is how a project picks between engines at
-render time. Resolved once and cached.
+It may also name a callable, which lets a project pick between engines at
+render time. citry-django resolves it once and caches the result.
 
 #### `CITRY_DEPS_STRATEGY`
 
-What a `<c-*>` region serializes, using Citry's own names:
+Controls what a `<c-*>` region writes out. The values are Citry's own names:
 
 | | |
 |---|---|
-| `"document"` | The asset tags and the client runtime. What a page wants. |
-| `"simple"` | The tags alone. For an email or a static page, where per-instance JS would have nothing to run against. |
-| `"ignore"` | Nothing. Only when something downstream collects the assets; otherwise the page loads unstyled. |
+| `"document"` | The asset tags and the client runtime. Use this for a page. |
+| `"simple"` | The tags alone. Use this for an email or a static page, where per-instance JS would have nothing to run against. |
+| `"ignore"` | Nothing. Use this only when something downstream collects the assets; otherwise the page loads unstyled. |
 
 Under `"document"`, an island in a [partial
-response](#partial-responses-htmx-and-template-partials) is written as a
+response](#partial-responses-and-htmx) is written as a
 fragment. `"fragment"` writes every region that way.
 
 `"simple"` and `"ignore"` suit static pages only. A component that needs Vue
@@ -942,35 +1016,35 @@ the browser without its scripts, so a region holding one raises
 
 #### `CITRY_COLLECT_PAGE_ASSETS`
 
-Whether one response places each asset once. Off, every region writes
+Whether a response writes each asset once. When off, every region writes
 everything it asked for beside itself, which means the browser runtime once
 per island.
 
-Turn it off to rule the page out while debugging, or if a host of yours
-does the collecting.
+Turn it off to rule out the page as a cause while debugging, or if something
+else in your project does the collecting.
 
 #### `CITRY_MINIFY_ASSETS`
 
-Removed in citry-django 0.4.0. Citry pins each file it serves with an
-`integrity` hash of its bytes, so a browser refuses a minified copy. With the
-setting on, loading [the mount](#citrys-own-routes) raises
-`ImproperlyConfigured`; delete the setting. Set to `False` it is ignored.
+Delete this setting; citry-django 0.4.0 removed it. Citry pins each file it
+serves with an `integrity` hash of its bytes, so a browser refuses a minified
+copy. With the setting on, loading [the mount](#mounting-citrys-routes) raises
+`ImproperlyConfigured`. Set to `False`, it is ignored.
 
 #### `CITRY_COMPRESSOR_FILE_TYPES`
 
-Suffix to the mimetype your project compiles it under. See
-[Compiling what a browser cannot read](#compiling-what-a-browser-cannot-read).
-Only read when citry-django-compressor is installed.
+Maps a file suffix to the mimetype your project compiles it under. See
+[Compiling assets](#compiling-assets). Only read when citry-django-compressor
+is installed.
 
-That extension takes one option of its own, `sort`, which decides the order
-inside a bundle. On by default, so the same set of components is the same file
-wherever they sit on the page.
+The compressor extension takes one option of its own, `sort`, which orders the
+contents of a bundle. It is on by default, so the same set of components makes
+the same file wherever they sit on the page.
 
 #### `CITRY_PAGE_NONCE_PATHS`
 
 The URL path prefixes that htmx sends the page's CSP nonce to, in the
 `X-Citry-Page-Nonce` header (see [partial
-responses](#partial-responses-htmx-and-template-partials)). `None`, the
+responses](#partial-responses-and-htmx)). `None`, the
 default, sends it to every path on the page's own origin:
 
 ```python
@@ -984,7 +1058,7 @@ request does not send the header falls back as described there.
 
 ## Limits
 
-### A Django tag cannot rewrite a component's output
+### Tags that rewrite output
 
 Control flow around a component is fine:
 
@@ -1004,9 +1078,10 @@ A tag that transforms the *text* its body produced is not:
 You get an error rather than damaged HTML. Django content inside the same tag
 behaves normally, so `{% filter upper %}plain text{% endfilter %}` is fine.
 
-### A Django tag that caches its body cannot enclose a component
+### Caching tags around components
 
-This applies inside a component template:
+Inside a component's template, a Django tag that caches its body cannot enclose
+a component:
 
 ```html
 {# First render is fine. On a cache hit: RuntimeError #}
@@ -1017,7 +1092,7 @@ What the cache stores is a placeholder, because the real markup only exists once
 the surrounding block finishes. On a later hit the body never runs, so there is
 nothing left to put back.
 
-Let Citry cache the component instead, which is what you wanted anyway:
+Cache the component with Citry instead:
 
 ```python
 class Sidebar(Component):
@@ -1027,17 +1102,17 @@ class Sidebar(Component):
         ttl = 300
 ```
 
-A `<c-*>` region in a *Django* template is unaffected either way, since it
-renders to finished HTML before the cache tag ever sees it.
+A `<c-*>` region in a *Django* template is unaffected, since it renders to
+finished HTML before the cache tag sees it.
 
-### Where a component that needs Vue may stand
+### Where islands can go
 
-Citry hands a component that needs Vue to Vue as its own app, an *island*,
-and Vue mounts it on a `<div>` where the component stood. The browser closes
-a `<p>` before a `<div>`, moves a `<div>` out of a table unless it sits in a
-cell, drops one inside a `<select>`, and leaves SVG or MathML for it. The
-component would show up somewhere else, or not at all, so citry-django raises
-`IslandPlacementError` instead:
+citry-django raises `IslandPlacementError` when a component that needs Vue
+stands where the browser would move or drop its `<div>`. Vue mounts each
+island on a `<div>` where the component stood. The browser closes a `<p>`
+before a `<div>`, moves a `<div>` out of a table unless it sits in a cell,
+drops one inside a `<select>`, and leaves SVG or MathML for it. The component
+would show up somewhere else, or not at all:
 
 ```html
 {# IslandPlacementError: the component needs Vue #}
@@ -1056,7 +1131,7 @@ see an element that an including or parent template opened around an
 `{% include %}` or a `{% block %}`, and it does not run for a component you
 render directly from Python rather than from a Django template.
 
-### A Django block cannot straddle a region boundary
+### Django blocks across regions
 
 In a Django template, a block may wrap a region or sit inside one:
 
@@ -1072,16 +1147,21 @@ It cannot open outside a region and close inside it:
 {% if x %}<c-card>body{% endif %}</c-card>
 ```
 
-This is not a rule about HTML. A tag and an element may interleave freely:
+The rule is about Django tags and `<c-*>` elements only. A tag and a plain
+HTML element may overlap freely:
 
 ```html
-{% if a %}<div>{% endif %}</div>              {# renders exactly as plain Django #}
-<div class="{% if a %}on{% endif %}">x</div>  {# fine, an element could not go here #}
+{# renders exactly as plain Django #}
+{% if a %}<div>{% endif %}</div>
+
+{# fine, an element could not go here #}
+<div class="{% if a %}on{% endif %}">x</div>
 ```
 
-### `{% extends %}` belongs in a Django template
+### Where to put `{% extends %}`
 
-A component is a fragment, not a page:
+Use `{% extends %}` in a Django template, and put components inside it. A
+component is a fragment, not a page:
 
 ```python
 class Page(Component):
@@ -1089,19 +1169,18 @@ class Page(Component):
     template = '{% extends "base.html" %}...'  # not supported
 ```
 
-Extend in the Django template and put components inside it.
-
 The same goes for a component that writes the whole document, with
 `<!doctype html>` and `<head>`. Put that skeleton in a Django template,
 with `<c-css />` in its `<head>` and `<c-js />` before `</body>`. As a
 region, such a component gets its tags written before the doctype when it
 needs Vue, where the browser does not read them as part of `<head>`.
 
-### `{% verbatim %}` still picks up an identity marker
+### `{% verbatim %}` markers
 
 `{% verbatim %}` keeps both engines out of its body, so `{{ x }}` is emitted
-literally. But Citry stamps its marker on the first element a component
-produces, and a literal tag written first in the body can catch one:
+literally. But Citry stamps an identity marker (a `data-cid-...` attribute it uses to
+track the component) on the first element a component produces, and a literal
+tag written first in the body can catch one:
 
 ```html
 {% verbatim %}<c-button label="x"/>{% endverbatim %}
@@ -1111,9 +1190,11 @@ produces, and a literal tag written first in the body can catch one:
 <c-button label="x" data-cid-cltlb3y4j=""/>
 ```
 
-Put anything before it - a newline, a comment - and it is left alone.
+To avoid this, put anything before the tag, such as a newline or a comment.
 
-### A filter wins over a variable of the same name
+### Filters win over variables
+
+If a filter and a variable have the same name, the filter wins:
 
 ```html
 {{ a|length }}
@@ -1122,7 +1203,7 @@ Put anything before it - a newline, a comment - and it is left alone.
 With `a = [1, 2, 3]` and a variable also called `length`, this renders `3`: the
 filter, not a bitwise or. Rename the variable if you meant the operator.
 
-### A literal `<c-*>` in a Django template is read as a region
+### Literal `<c-*>` text
 
 ```html
 {# ValueError: this looks like a region and does not resolve #}
@@ -1141,20 +1222,23 @@ Text inside `<script>` and inside attribute values is left alone already, so
 
 ### Tooling on mixed templates
 
-`citry format` and `citry check` need your app to see Django syntax in a
-template:
+To run `citry format` and `citry check` on templates with Django syntax, pass
+your app:
 
 ```bash
 citry --app myproject.citry_app:app check
 ```
 
-Given that, the formatter leaves Django's syntax exactly as written and formats
-only the Citry parts around it, and the checker skips its unresolved-name lint
-on mixed templates, since a Django `{% for %}` can introduce names Citry cannot
-see. `citry check --static` does not load your app, so it cannot recognise
+With the app, the formatter leaves Django's syntax exactly as written and
+formats only the Citry parts around it. The checker skips its unresolved-name
+check on mixed templates, since a Django `{% for %}` can introduce names Citry
+cannot see. `citry check --static` does not load your app, so it cannot recognise
 Django syntax at all.
 
-### Server events and Django's CSRF settings
+### Django's CSRF settings
+
+Server events work with Django's default CSRF settings. If your project
+changes them, pass them to Citry with `csrf_settings()`.
 
 Citry's server events (`Events`) pass Django's own CSRF check: the browser
 reads the `csrftoken` cookie and sends it back in the `X-CSRFToken` header.
@@ -1165,8 +1249,7 @@ messages. Django then sets the cookie even on a page without a form. A page
 whose islands need no token does not ask, so it stays cacheable. With
 Django's default settings the token is not written into the page.
 
-When a project changes Django's CSRF settings, give them to Citry when you
-build the app, with `csrf_settings()`:
+To pass your settings to Citry, call `csrf_settings()` when you build the app:
 
 ```python
 from citry_django import CitryDjangoExtension, csrf_settings
@@ -1197,7 +1280,7 @@ defaults it adds nothing. A key you write after the spread wins, such as
 `{**csrf_settings(), "_csrf_header": "X-Other"}`, and citry-django does not
 check it. When Django's cookie or header name differs from Citry's and the
 app does not set it, every server event would fail Django's check with a
-403. So an island that needs the token then writes a small script that
+403. In that case an island that needs the token writes a small script that
 names them (`Citry.configure({csrf: ...})`), and citry-django issues a
 `CsrfSettingsWarning` that tells you to use `csrf_settings()`.
 
@@ -1208,20 +1291,23 @@ script names them instead. Each of these scripts carries the page's CSP
 nonce when there is one, and waits up to five seconds for Citry's
 runtime, which a fragment loads later.
 
-### HTML a server event sends back needs the page's CSP nonce
+### CSP nonce in server event HTML
+
+A nonce is a one-time value that lets a script run under a Content Security
+Policy. Citry's own browser runtime needs nothing here to apply a server
+event's update to the app already on the page. A client of your own, such as
+htmx, that inserts a handler's HTML answer needs the nonce of the page that
+sent the call. The event request does not carry it, so use one of the two
+routes below.
 
 Under a nonce-based Content Security Policy, a region passes the request's
 nonce to Citry, so every island on the page carries it. The nonce is read
 from the template context (`csp_nonce` or `CSP_NONCE`), from django-csp's
 `request.csp_nonce`, or from Django's own CSP middleware.
 
-Citry's browser runtime applies a server event's update to the app already
-on the page and needs nothing more. A handler whose HTML answer is inserted
-into the page by a client of your own, such as htmx, needs the nonce of the
-page that sent the call, which the event request does not have. When the
-client sends it in the `X-Citry-Page-Nonce` header, as the snippet a page
-with an island writes makes htmx do, Citry reads it itself, and you need no
-setting. Citry lists the header in `Vary` on every event answer, and
+When the client sends the nonce in the `X-Citry-Page-Nonce` header, as the
+snippet a page with an island writes makes htmx do, Citry reads it itself,
+and you need no setting. Citry lists the header in `Vary` on every event answer, and
 answers a call that sent it with `Cache-Control: no-store`.
 
 For a client that cannot send the header, citry-django can keep each page's
@@ -1237,8 +1323,9 @@ app = Citry(
 )
 ```
 
+Once you set `_csp_nonce`, Citry asks only that function for the nonce, so
 `page_csp_nonce` uses the `X-Citry-Page-Nonce` header when the call sent
-one, because Citry reads only the function once it is set. Otherwise it
+one. Otherwise it
 gives back the nonce citry-django kept in the session when it rendered a
 page that holds a component that needs Vue. Pass the function itself:
 citry-django keeps the nonce only when the setting is `page_csp_nonce`. It
@@ -1248,16 +1335,15 @@ kept nonce, every whole page they load replaces it, with or without an
 island, and saves the session too. The session keeps the nonce of the last
 page a visitor loaded, so with several tabs open, a call without the header
 from an older tab gets the newer tab's nonce, and the browser refuses to
-start the HTML. A [partial response](#partial-responses-htmx-and-template-partials)
+start the HTML. A [partial response](#partial-responses-and-htmx)
 without the header uses the kept nonce in the same way.
 
 ### Injection safety
 
-Citry-rendered output is never spliced into Django template *source*, so a
-`{%` arriving in user data is inert rather than executed. In the same way,
-Django's output inside an interactive component reaches the browser as
-HTML that Vue inserts but never compiles, so a `{{ }}` or a Vue attribute
-arriving in user data stays text.
+Citry-rendered output is never inserted into Django template *source*, so a
+`{%` in user data stays inert. In the same way, Django's output inside a
+component that needs Vue reaches the browser as HTML that Vue inserts but
+never compiles, so a `{{ }}` or a Vue attribute in user data stays text.
 
 ## Development
 
@@ -1286,18 +1372,18 @@ uv run python testproject/seed.py
 uv run python manage.py runserver
 ```
 
-```
-packages/citry-django/           the adapter
-packages/citry-django-compressor/ optional: assets through django-compressor
-packages/citry-django-djc/       optional: alongside django-components
-testproject/                     the Wagtail site every test runs against
-tests/                           pytest suites
+```text
+packages/citry-django/            the main package
+packages/citry-django-compressor/  optional: django-compressor assets
+packages/citry-django-djc/         optional: django-components syntax
+testproject/                       the Wagtail site the tests use
+tests/                             pytest suites
 ```
 
 Components live in `testproject/citry_app.py` and are built on `citry-ui`. The
 project has Wagtail, an asset pipeline, seven third-party tag libraries and
-`django-components` switched on at once. Nothing in it is written for the tests:
-they are packages people actually install.
+`django-components` switched on at once. Nothing in it is written for the tests;
+the libraries are packages people actually install.
 
 ### Making a release
 
