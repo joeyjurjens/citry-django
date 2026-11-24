@@ -845,9 +845,7 @@ asset's `type` alone. Map each suffix your project compiles to a type, once:
 
 ```python
 # settings.py
-COMPRESS_PRECOMPILERS = (
-    ("text/x-scss", "django_libsass.SassCompiler"),
-)
+COMPRESS_PRECOMPILERS = (("text/x-scss", "django_libsass.SassCompiler"),)
 CITRY_COMPRESSOR_FILE_TYPES = {".scss": "text/x-scss"}
 ```
 
